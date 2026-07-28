@@ -1,8 +1,8 @@
 # EquityKobo
 
-EquityKobo is a private Nigerian equities research platform for tracking NGX-listed companies, building trusted financial datasets, ranking investment opportunities, monitoring portfolio exposure, and keeping a disciplined decision journal.
+EquityKobo is an investment research platform that helps long-term investors identify high-quality Nigerian companies trading at attractive valuations. Rather than predicting stock prices, it collects verifiable financial data, evaluates businesses, ranks opportunities, and documents investment decisions through a transparent research process.
 
-It is designed for a long-term retail investor who wants to buy Nigerian stocks thoughtfully instead of chasing price movement. The system does not place trades and does not give automatic financial advice. It helps you collect evidence, review sources, score companies, understand risks, and decide what deserves further research.
+It is designed for investors who want to buy businesses, not chase ticker symbols. The system does not place trades and does not give automatic financial advice. It helps you collect evidence, review sources, score companies, understand risks, and decide what deserves further research.
 
 ## Product Goal
 
@@ -10,20 +10,26 @@ EquityKobo answers one practical question:
 
 > Which Nigerian companies deserve my attention before I invest?
 
-To answer that, it combines:
+EquityKobo combines:
 
-- company fundamentals
-- price and liquidity data
-- dividend history
-- source verification
-- scanner scores
-- NGX market rules
-- portfolio exposure
-- alerts
-- decision notes
-- weekly research digests
+- Business fundamentals: earnings, revenue, cash flow, margins, and balance sheet strength
+- Market data: price, volume, liquidity, and NGX market-rule checks
+- Valuation analysis: P/E, dividend yield, sector-aware valuation signals, and fair-value research inputs
+- Research provenance: source tracking, review status, and audit logs for important data
+- Sector-aware scoring: banks, telecoms, industrials, agriculture, consumer goods, and general companies
+- Portfolio tracking: positions, exposure, dividends received, and decision history
 
 The system is intentionally conservative. Imported and AI-extracted data remains unreviewed until you approve it, and low-confidence records reduce the usefulness of scanner output.
+
+## Investment Philosophy
+
+EquityKobo is built on five principles:
+
+- Buy businesses, not ticker symbols.
+- Every important metric should be traceable to its source.
+- Every investment decision should have an explanation.
+- Companies should be compared within their sectors.
+- The system should support investor judgment, never replace it.
 
 ## Core Capabilities
 
@@ -402,6 +408,10 @@ Start with 20 liquid and familiar NGX names:
 - Phase 16: weekly research digest
 - Phase 17: CSV exports
 - Phase 18: investment classification, buy-checklist, and NGX market-rule checks
+
+## Vision
+
+To become the research operating system for long-term equity investors, starting with the Nigerian Exchange and expanding to global markets.
 
 ## Important Note
 
