@@ -19,7 +19,7 @@ EquityKobo combines:
 - Sector-aware scoring: banks, telecoms, industrials, agriculture, consumer goods, and general companies
 - Portfolio tracking: positions, exposure, dividends received, and decision history
 
-The system is intentionally conservative. Imported and AI-extracted data remains unreviewed until you approve it, and low-confidence records reduce the usefulness of scanner output.
+The system is intentionally conservative. NGX Pulse market data is treated as trusted for prices and market overview, while manual entries, uploaded reports, and AI-extracted fundamentals remain unreviewed until you approve them. Low-confidence records reduce the usefulness of scanner output.
 
 ## Investment Philosophy
 
@@ -38,6 +38,7 @@ EquityKobo is built on five principles:
 - Company registry for NGX-listed companies
 - CSV imports for prices, financial statements, and dividends
 - Source document tracking
+- Trusted NGX Pulse market-data ingestion
 - Uploaded annual/quarterly report storage
 - Reviewed/unreviewed flags for key records
 - Pending review queue and audit logs
@@ -143,7 +144,7 @@ digest_actions
 ## Typical Workflow
 
 1. Import or create the company universe.
-2. Import prices, financial statements, and dividends from trusted sources.
+2. Sync NGX Pulse prices and market overview.
 3. Upload company reports and extract text where useful.
 4. Use DeepSeek to create extraction drafts from report text.
 5. Review and approve important imported/extracted records.
@@ -159,9 +160,9 @@ digest_actions
 - Python
 - FastAPI
 - SQLAlchemy
-- SQLite by default for local development
-- PostgreSQL-ready via `DATABASE_URL`
+- PostgreSQL via `DATABASE_URL`
 - DeepSeek-compatible LLM extraction client
+- NGX Pulse market-data integration
 
 ## Quick Start
 
@@ -185,11 +186,17 @@ Set DeepSeek config in `.env`:
 DEEPSEEK_API_KEY=your_key_here
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
+NGXPULSE_API_KEY=your_key_here
+NGXPULSE_BASE_URL=https://www.ngxpulse.ng
 ```
 
 ## Useful Endpoints
 
 ```text
+POST /auth/signup
+POST /auth/login
+GET /auth/me
+POST /auth/logout
 GET /companies
 GET /prices
 GET /financial-statements
@@ -223,8 +230,11 @@ GET /dividends/candidates
 POST /portfolio/transactions
 GET /portfolio/transactions
 GET /portfolio/summary
+GET /portfolio/exit-intelligence
 POST /research/notes
 GET /research/notes
+POST /research/goals
+GET /research/goals
 GET /research/{symbol}/brief
 GET /rules/investment
 GET /rules/investment/{symbol}
@@ -232,6 +242,7 @@ GET /rules/ngx/{symbol}
 POST /watchlists
 GET /watchlists
 GET /watchlists/{watchlist_id}
+GET /watchlists/{watchlist_id}/intelligence
 POST /watchlists/{watchlist_id}/items
 DELETE /watchlists/{watchlist_id}/items/{symbol}
 POST /alerts/rules
@@ -244,15 +255,104 @@ POST /alerts/events/{event_id}/acknowledge
 POST /alerts/events/{event_id}/dismiss
 GET /digest/weekly
 GET /exports/{dataset}.csv
+GET /integrations/ngxpulse/market
+POST /integrations/ngxpulse/sync/stocks
+POST /integrations/ngxpulse/sync/prices/{symbol}
 ```
 
 ## Example Commands
+
+Create an account:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"investor@example.com","password":"strongpass123","full_name":"EquityKobo Investor"}'
+```
+
+Login:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"investor@example.com","password":"strongpass123"}'
+```
+
+Use the returned token:
+
+```bash
+curl "http://127.0.0.1:8000/auth/me" \
+  -H "Authorization: Bearer your_token_here"
+```
+
+Run the daily NGX Pulse sync job:
+
+```bash
+equitykobo-sync daily-market
+```
+
+This syncs the latest NGX Pulse stock snapshot, refreshes the market scan, and evaluates alert rules.
+
+Run the same job for only selected symbols:
+
+```bash
+equitykobo-sync daily-market --symbol GTCO --symbol ZENITHBANK --days 5
+```
 
 Run the scanner:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/scans/run"
 curl "http://127.0.0.1:8000/scans/latest"
+```
+
+Sync real NGX Pulse prices:
+
+```bash
+curl "http://127.0.0.1:8000/integrations/ngxpulse/market"
+curl -X POST "http://127.0.0.1:8000/integrations/ngxpulse/sync/stocks"
+curl -X POST "http://127.0.0.1:8000/integrations/ngxpulse/sync/prices/GTCO?days=2"
+```
+
+Create an investment goal for a holding:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/research/goals" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "GTCO",
+    "goal_type": "capital_gain",
+    "reason": "Buy for capital gain after confirming valuation and earnings quality.",
+    "target_return_percent": 35,
+    "review_date": "2026-12-31",
+    "sell_rule": "Review for profit-taking when target return is reached or thesis weakens."
+  }'
+```
+
+Review smart watchlist entry signals:
+
+```bash
+curl "http://127.0.0.1:8000/watchlists/1/intelligence"
+```
+
+Review portfolio sell/hold signals:
+
+```bash
+curl "http://127.0.0.1:8000/portfolio/exit-intelligence"
+```
+
+## Scheduled Sync
+
+For local automation, run the sync job from cron after the Nigerian market closes. Example:
+
+```cron
+30 16 * * 1-5 cd /home/dtgamer/Work/stock_market_system && . .venv/bin/activate && equitykobo-sync daily-market >> data/equitykobo-sync.log 2>&1
+```
+
+If cron runs outside your normal shell environment, include `DATABASE_URL` or make sure `.env` is available:
+
+```cron
+30 16 * * 1-5 cd /home/dtgamer/Work/stock_market_system && . .venv/bin/activate && equitykobo-sync daily-market >> data/equitykobo-sync.log 2>&1
 ```
 
 Validate and import prices:

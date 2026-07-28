@@ -1,7 +1,37 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str = Field(min_length=8)
+    full_name: str | None = None
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+    full_name: str | None
+    plan: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthTokenRead(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+    user: UserRead
 
 
 class CompanyCreate(BaseModel):
@@ -22,6 +52,19 @@ class ImportResult(BaseModel):
     imported: int
     skipped: int
     errors: list[str]
+
+
+class NgxPulseSyncResult(BaseModel):
+    endpoint: str
+    imported: int
+    updated_prices: int = 0
+    updated_companies: int
+    skipped: int
+    errors: list[str]
+
+
+class NgxPulseMarketOverviewRead(BaseModel):
+    data: dict
 
 
 class ReviewAction(BaseModel):
@@ -351,6 +394,89 @@ class InvestmentNoteRead(BaseModel):
     portfolio_quantity: Decimal | None = None
     portfolio_weight: Decimal | None = None
     portfolio_unrealized_gain_loss_percent: Decimal | None = None
+
+
+class InvestmentGoalCreate(BaseModel):
+    symbol: str
+    goal_type: str
+    reason: str
+    target_price: Decimal | None = None
+    target_return_percent: Decimal | None = None
+    target_dividend_yield: Decimal | None = None
+    target_date: date | None = None
+    review_date: date | None = None
+    sell_rule: str | None = None
+
+
+class InvestmentGoalRead(BaseModel):
+    id: int
+    symbol: str
+    name: str
+    goal_type: str
+    target_price: Decimal | None
+    target_return_percent: Decimal | None
+    target_dividend_yield: Decimal | None
+    target_date: date | None
+    review_date: date | None
+    reason: str
+    sell_rule: str | None
+    status: str
+
+
+class PriceRangeRead(BaseModel):
+    latest_price: Decimal | None
+    price_when_added: Decimal | None = None
+    fifty_two_week_high: Decimal | None
+    fifty_two_week_low: Decimal | None
+    position_in_range_percent: Decimal | None
+
+
+class WatchlistEntrySignalRead(BaseModel):
+    watchlist_id: int
+    watchlist_name: str
+    symbol: str
+    name: str
+    sector: str | None
+    stock_types: list[str]
+    entry_quality: str
+    decision_label: str
+    next_action: str
+    price_range: PriceRangeRead
+    pe_ratio: Decimal | None
+    overall_score: Decimal | None
+    valuation_score: Decimal | None
+    data_confidence: Decimal | None
+    reasons: list[str]
+    risks: list[str]
+
+
+class WatchlistIntelligenceRead(BaseModel):
+    watchlist_id: int
+    watchlist_name: str
+    member_count: int
+    focus_warning: str | None
+    signals: list[WatchlistEntrySignalRead]
+
+
+class ExitSignalRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    action: str
+    confidence: str
+    latest_price: Decimal | None
+    average_cost: Decimal | None
+    unrealized_gain_loss_percent: Decimal | None
+    portfolio_weight: Decimal | None
+    goal: InvestmentGoalRead | None
+    reasons: list[str]
+    risks: list[str]
+    next_action: str
+
+
+class PortfolioExitIntelligenceRead(BaseModel):
+    generated_date: date
+    signals: list[ExitSignalRead]
 
 
 class FinancialStatementCreate(BaseModel):

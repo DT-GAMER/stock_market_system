@@ -29,6 +29,28 @@ class Company(Base, TimestampMixin):
     dividends: Mapped[list["Dividend"]] = relationship(back_populates="company")
 
 
+class User(Base, TimestampMixin):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    plan: Mapped[str] = mapped_column(String(80), default="free", index=True)
+    role: Mapped[str] = mapped_column(String(80), default="user", index=True)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+
+
+class AuthToken(Base, TimestampMixin):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
 class SourceDocument(Base, TimestampMixin):
     __tablename__ = "source_documents"
 
@@ -209,6 +231,22 @@ class InvestmentNote(Base, TimestampMixin):
     thesis: Mapped[str] = mapped_column(Text)
     risks: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class InvestmentGoal(Base, TimestampMixin):
+    __tablename__ = "investment_goals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    goal_type: Mapped[str] = mapped_column(String(80), index=True)
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    target_return_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    target_dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    review_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    sell_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(80), default="active", index=True)
 
 
 class AlertRule(Base, TimestampMixin):

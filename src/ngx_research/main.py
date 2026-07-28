@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +35,7 @@ from ngx_research.schemas import (
     AlertRuleCreate,
     AlertRuleRead,
     ApplyDraftResult,
+    AuthTokenRead,
     CompanyCoverageRead,
     CompanyCreate,
     CompanyRead,
@@ -48,13 +49,18 @@ from ngx_research.schemas import (
     FinancialStatementRead,
     ImportResult,
     InvestmentBriefRead,
+    InvestmentGoalCreate,
+    InvestmentGoalRead,
     InvestmentNoteCreate,
     InvestmentNoteRead,
     InvestmentRuleRead,
     LatestPriceRead,
     LiquidityRead,
     NgxMarketRuleRead,
+    NgxPulseMarketOverviewRead,
+    NgxPulseSyncResult,
     PendingReviewItem,
+    PortfolioExitIntelligenceRead,
     PortfolioSummaryRead,
     PortfolioTransactionCreate,
     PortfolioTransactionRead,
@@ -72,9 +78,13 @@ from ngx_research.schemas import (
     SourceDocumentCreate,
     SourceDocumentRead,
     UploadedReportRead,
+    UserCreate,
+    UserLogin,
+    UserRead,
     WatchlistActionRead,
     WatchlistCreate,
     WatchlistDetailRead,
+    WatchlistIntelligenceRead,
     WatchlistItemCreate,
     WatchlistRead,
 )
@@ -86,11 +96,24 @@ from ngx_research.services.alerts import (
     set_alert_event_status,
     set_alert_rule_active,
 )
+from ngx_research.services.auth import (
+    AuthError,
+    create_user,
+    login_user,
+    revoke_bearer_token,
+    user_from_bearer_token,
+)
 from ngx_research.services.csv_importer import (
     import_companies,
     import_dividends,
     import_financial_statements,
     import_prices,
+)
+from ngx_research.services.decision_intelligence import (
+    create_investment_goal,
+    list_investment_goals,
+    portfolio_exit_intelligence,
+    watchlist_intelligence,
 )
 from ngx_research.services.deepseek_client import DeepSeekError, extract_financial_statement
 from ngx_research.services.dividend_engine import (
@@ -108,6 +131,12 @@ from ngx_research.services.investment_rules import (
     investment_rules,
     list_investment_rules,
     ngx_market_rules,
+)
+from ngx_research.services.ngxpulse_client import (
+    NgxPulseError,
+    fetch_market_overview,
+    sync_all_stocks,
+    sync_symbol_prices,
 )
 from ngx_research.services.pdf_extractor import PdfExtractionError, extract_pdf_text
 from ngx_research.services.portfolio import create_transaction, list_transactions, portfolio_summary
@@ -138,6 +167,7 @@ def on_startup() -> None:
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+AuthorizationHeader = Annotated[str | None, Header(alias="Authorization")]
 CsvUpload = Annotated[UploadFile, File(...)]
 ReportUploadFile = Annotated[UploadFile, File(...)]
 ReportSymbol = Annotated[str | None, Form()]
@@ -149,6 +179,51 @@ ReportNotes = Annotated[str | None, Form()]
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _current_user(session: SessionDep, authorization: AuthorizationHeader = None) -> UserRead:
+    try:
+        user = user_from_bearer_token(session, authorization)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return UserRead.model_validate(user)
+
+
+@app.post("/auth/signup", response_model=AuthTokenRead)
+def signup(payload: UserCreate, session: SessionDep) -> AuthTokenRead:
+    try:
+        user, token, expires_at = create_user(
+            session=session,
+            email=payload.email,
+            password=payload.password,
+            full_name=payload.full_name,
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AuthTokenRead(access_token=token, expires_at=expires_at, user=UserRead.model_validate(user))
+
+
+@app.post("/auth/login", response_model=AuthTokenRead)
+def login(payload: UserLogin, session: SessionDep) -> AuthTokenRead:
+    try:
+        user, token, expires_at = login_user(session, payload.email, payload.password)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return AuthTokenRead(access_token=token, expires_at=expires_at, user=UserRead.model_validate(user))
+
+
+@app.get("/auth/me", response_model=UserRead)
+def me(current_user: Annotated[UserRead, Depends(_current_user)]) -> UserRead:
+    return current_user
+
+
+@app.post("/auth/logout")
+def logout(session: SessionDep, authorization: AuthorizationHeader = None) -> dict[str, str]:
+    try:
+        revoke_bearer_token(session, authorization)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {"status": "logged_out"}
 
 
 @app.post("/companies", response_model=CompanyRead)
@@ -203,6 +278,11 @@ def portfolio_summary_view(session: SessionDep) -> PortfolioSummaryRead:
     return portfolio_summary(session)
 
 
+@app.get("/portfolio/exit-intelligence", response_model=PortfolioExitIntelligenceRead)
+def portfolio_exit_intelligence_view(session: SessionDep) -> PortfolioExitIntelligenceRead:
+    return portfolio_exit_intelligence(session)
+
+
 @app.post("/research/notes", response_model=InvestmentNoteRead)
 def create_research_note(
     payload: InvestmentNoteCreate,
@@ -229,6 +309,40 @@ def research_notes(
     limit: int = 100,
 ) -> list[InvestmentNoteRead]:
     return list_notes(session, symbol=symbol, limit=limit)
+
+
+@app.post("/research/goals", response_model=InvestmentGoalRead)
+def create_research_goal(
+    payload: InvestmentGoalCreate,
+    session: SessionDep,
+) -> InvestmentGoalRead:
+    company = _company_by_symbol(session, payload.symbol)
+    try:
+        return create_investment_goal(
+            session=session,
+            company=company,
+            goal_type=payload.goal_type,
+            reason=payload.reason,
+            target_price=payload.target_price,
+            target_return_percent=payload.target_return_percent,
+            target_dividend_yield=payload.target_dividend_yield,
+            target_date=payload.target_date,
+            review_date=payload.review_date,
+            sell_rule=payload.sell_rule,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/research/goals", response_model=list[InvestmentGoalRead])
+def research_goals(
+    session: SessionDep,
+    status: str | None = "active",
+    limit: int = 100,
+) -> list[InvestmentGoalRead]:
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return list_investment_goals(session, status=status, limit=limit)
 
 
 @app.get("/research/{symbol}/brief", response_model=InvestmentBriefRead)
@@ -276,6 +390,15 @@ def research_watchlists(session: SessionDep) -> list[WatchlistRead]:
 def research_watchlist_detail(watchlist_id: int, session: SessionDep) -> WatchlistDetailRead:
     watchlist = _watchlist_by_id(session, watchlist_id)
     return watchlist_detail(session, watchlist)
+
+
+@app.get("/watchlists/{watchlist_id}/intelligence", response_model=WatchlistIntelligenceRead)
+def research_watchlist_intelligence(
+    watchlist_id: int,
+    session: SessionDep,
+) -> WatchlistIntelligenceRead:
+    watchlist = _watchlist_by_id(session, watchlist_id)
+    return watchlist_intelligence(session, watchlist)
 
 
 @app.post("/watchlists/{watchlist_id}/items", response_model=WatchlistActionRead)
@@ -404,6 +527,40 @@ def export_research_dataset(dataset: str, session: SessionDep, limit: int = 100)
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/integrations/ngxpulse/market", response_model=NgxPulseMarketOverviewRead)
+async def ngxpulse_market_overview() -> NgxPulseMarketOverviewRead:
+    try:
+        return NgxPulseMarketOverviewRead(data=await fetch_market_overview())
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/stocks", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_stocks(
+    session: SessionDep,
+    trade_date: date | None = None,
+) -> NgxPulseSyncResult:
+    try:
+        return await sync_all_stocks(session, trade_date=trade_date)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/prices/{symbol}", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_symbol_prices(
+    symbol: str,
+    session: SessionDep,
+    days: int | None = None,
+    trade_date: date | None = None,
+) -> NgxPulseSyncResult:
+    if days is not None and days <= 0:
+        raise HTTPException(status_code=400, detail="days must be greater than zero")
+    try:
+        return await sync_symbol_prices(session, symbol=symbol, days=days, trade_date=trade_date)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/coverage/source", response_model=list[CompanyCoverageRead])
