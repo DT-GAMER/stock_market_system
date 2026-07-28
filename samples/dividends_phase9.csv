@@ -1,0 +1,6 @@
+symbol,declared_date,ex_dividend_date,payment_date,amount_per_share,currency,source_name,source_url
+GTCO,2024-03-01,2024-03-15,2024-04-01,6.20,NGN,Phase 9 sample,
+GTCO,2025-03-01,2025-03-15,2025-04-01,7.50,NGN,Phase 9 sample,
+GTCO,2026-08-01,2026-08-15,2026-09-01,1.00,NGN,Phase 9 sample,
+ZENITHBANK,2025-03-03,2025-03-18,2025-04-03,4.00,NGN,Phase 9 sample,
+MTNN,2026-03-10,2026-03-20,2026-04-10,12.50,NGN,Phase 9 sample,

@@ -1,0 +1,4 @@
+symbol,trade_date,close_price,open_price,high_price,low_price,volume,value_traded,source_name,source_url
+GTCO,2026-07-28,102.50,101.50,103.50,100.50,1500000,153750000,Phase 8 sample,
+ZENITHBANK,2026-07-28,83.25,82.00,84.00,81.75,1100000,91575000,Phase 8 sample,
+MTNN,2026-07-28,285.00,282.00,288.00,281.00,400000,114000000,Phase 8 sample,

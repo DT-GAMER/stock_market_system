@@ -1,0 +1,3 @@
+symbol,trade_date,close_price,open_price,high_price,low_price,volume,value_traded,source_name,source_url
+GTCO,2026-07-27,101.50,100.00,103.00,99.00,1200000,121800000,Manual sample,
+ZENITHBANK,2026-07-27,82.00,81.00,83.00,80.50,950000,77900000,Manual sample,
