@@ -100,53 +100,102 @@ def _sync_stock_rows(
     updated_companies = 0
     skipped = 0
     errors: list[str] = []
+    parsed_rows: list[dict[str, Any]] = []
 
     for row in rows:
         try:
             symbol = _symbol(row)
-            company = _upsert_company(session, row, symbol)
-            updated_companies += 1
             row_trade_date = _trade_date(row) or trade_date
-            price_values = {
-                "close_price": _decimal_field(
-                    row,
-                    "current_price",
-                    "close",
-                    "close_price",
-                    "price",
-                    required=True,
-                ),
-                "open_price": _decimal_field(row, "open", "open_price"),
-                "high_price": _decimal_field(row, "high", "high_price"),
-                "low_price": _decimal_field(row, "low", "low_price"),
-                "volume": _int_field(row, "volume"),
-                "value_traded": _decimal_field(row, "value", "value_traded"),
-                "source_document_id": source.id,
-                "reviewed": is_trusted_document_type(source.document_type),
-            }
-            existing_price = session.scalar(
-                select(Price).where(
-                    Price.company_id == company.id,
-                    Price.trade_date == row_trade_date,
-                )
+            parsed_rows.append(
+                {
+                    "symbol": symbol,
+                    "name": str(row.get("name") or symbol),
+                    "sector": str(row["sector"]) if row.get("sector") else None,
+                    "trade_date": row_trade_date,
+                    "price_values": {
+                        "close_price": _decimal_field(
+                            row,
+                            "current_price",
+                            "close",
+                            "close_price",
+                            "price",
+                            required=True,
+                        ),
+                        "open_price": _decimal_field(row, "open", "open_price"),
+                        "high_price": _decimal_field(row, "high", "high_price"),
+                        "low_price": _decimal_field(row, "low", "low_price"),
+                        "volume": _int_field(row, "volume"),
+                        "value_traded": _decimal_field(row, "value", "value_traded"),
+                        "source_document_id": source.id,
+                        "reviewed": is_trusted_document_type(source.document_type),
+                    },
+                }
             )
-            if existing_price:
-                if _price_matches(existing_price, price_values):
-                    skipped += 1
-                else:
-                    _update_price(existing_price, price_values)
-                    session.commit()
-                    updated_prices += 1
-                continue
-
-            price = Price(company_id=company.id, trade_date=row_trade_date, **price_values)
-            session.add(price)
-            session.commit()
-            imported += 1
         except Exception as exc:  # noqa: BLE001
-            session.rollback()
             skipped += 1
             errors.append(str(exc))
+
+    if not parsed_rows:
+        return NgxPulseSyncResult(
+            endpoint=endpoint,
+            imported=imported,
+            updated_prices=updated_prices,
+            updated_companies=updated_companies,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    symbols = sorted({str(row["symbol"]) for row in parsed_rows})
+    companies = {
+        company.symbol: company
+        for company in session.scalars(select(Company).where(Company.symbol.in_(symbols)))
+    }
+    for row in parsed_rows:
+        symbol = str(row["symbol"])
+        company = companies.get(symbol)
+        if company:
+            company.name = str(row["name"]) or company.name
+            company.sector = str(row["sector"]) if row.get("sector") else company.sector
+        else:
+            company = Company(
+                symbol=symbol,
+                name=str(row["name"]),
+                sector=str(row["sector"]) if row.get("sector") else None,
+            )
+            session.add(company)
+            companies[symbol] = company
+        updated_companies += 1
+    session.commit()
+
+    company_ids = [companies[str(row["symbol"])].id for row in parsed_rows]
+    trade_dates = sorted({row["trade_date"] for row in parsed_rows})
+    existing_prices = {
+        (price.company_id, price.trade_date): price
+        for price in session.scalars(
+            select(Price).where(
+                Price.company_id.in_(company_ids),
+                Price.trade_date.in_(trade_dates),
+            )
+        )
+    }
+
+    for row in parsed_rows:
+        company = companies[str(row["symbol"])]
+        row_trade_date = row["trade_date"]
+        price_values = row["price_values"]
+        existing_price = existing_prices.get((company.id, row_trade_date))
+        if existing_price:
+            if _price_matches(existing_price, price_values):
+                skipped += 1
+            else:
+                _update_price(existing_price, price_values)
+                updated_prices += 1
+            continue
+
+        price = Price(company_id=company.id, trade_date=row_trade_date, **price_values)
+        session.add(price)
+        imported += 1
+    session.commit()
 
     return NgxPulseSyncResult(
         endpoint=endpoint,

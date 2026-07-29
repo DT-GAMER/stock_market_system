@@ -68,18 +68,35 @@ def validate_price_csv(file: TextIOBase, session: Session) -> PriceImportValidat
 
 
 def latest_prices(session: Session, limit: int = 100) -> list[LatestPriceRead]:
-    companies = session.scalars(select(Company).where(Company.is_active.is_(True)).order_by(Company.symbol))
+    companies = list(
+        session.scalars(select(Company).where(Company.is_active.is_(True)).order_by(Company.symbol))
+    )
+    company_by_id = {company.id: company for company in companies}
+    latest_by_company: dict[int, Price] = {}
+    previous_by_company: dict[int, Price] = {}
+    if company_by_id:
+        prices = session.scalars(
+            select(Price)
+            .where(Price.company_id.in_(company_by_id))
+            .order_by(Price.company_id, desc(Price.trade_date), desc(Price.id))
+        )
+        for price in prices:
+            latest_price = latest_by_company.get(price.company_id)
+            if latest_price is None:
+                latest_by_company[price.company_id] = price
+                continue
+            if (
+                price.company_id not in previous_by_company
+                and price.trade_date < latest_price.trade_date
+            ):
+                previous_by_company[price.company_id] = price
+
     latest: list[LatestPriceRead] = []
     for company in companies:
-        price = _latest_price(session, company.id)
+        price = latest_by_company.get(company.id)
         if not price:
             continue
-        previous = session.scalar(
-            select(Price)
-            .where(Price.company_id == company.id, Price.trade_date < price.trade_date)
-            .order_by(desc(Price.trade_date))
-            .limit(1)
-        )
+        previous = previous_by_company.get(company.id)
         price_change = price.close_price - previous.close_price if previous else None
         price_change_percent = None
         if previous and previous.close_price:

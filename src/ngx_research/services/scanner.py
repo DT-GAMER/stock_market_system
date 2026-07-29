@@ -40,6 +40,14 @@ class SectorProfile:
     strong_margin: Decimal
 
 
+@dataclass
+class ScanContext:
+    latest_prices: dict[int, Price]
+    latest_statements: dict[int, FinancialStatement]
+    prior_statements: dict[int, FinancialStatement]
+    dividend_totals: dict[int, Decimal]
+
+
 def run_market_scan(session: Session, as_of_date: date | None = None) -> ScanSummary:
     scan_date = as_of_date or datetime.now(UTC).date()
     _clear_existing_scan_for_date(session, scan_date)
@@ -49,20 +57,27 @@ def run_market_scan(session: Session, as_of_date: date | None = None) -> ScanSum
     session.flush()
 
     scores: list[CompanyScore] = []
+    ratio_score_pairs: list[tuple[CompanyRatio, CompanyScore]] = []
     insufficient_data = 0
     companies = session.scalars(select(Company).where(Company.is_active.is_(True))).all()
+    context = _scan_context(session, scan_date)
 
     for company in companies:
-        ratio = calculate_ratios(session, company, scan_date)
+        ratio = _calculate_ratios_from_context(company, scan_date, context)
         score = score_company(company, ratio)
         if score.status == "Insufficient data":
             insufficient_data += 1
         session.add(ratio)
-        session.flush()
+        ratio_score_pairs.append((ratio, score))
+        scores.append(score)
+
+    session.flush()
+
+    for ratio, score in ratio_score_pairs:
         score.ratio_id = ratio.id
         session.add(score)
-        session.flush()
-        scores.append(score)
+
+    session.flush()
 
     ranked_scores = sorted(scores, key=lambda item: item.overall_score, reverse=True)
     for rank, score in enumerate(ranked_scores, start=1):
@@ -80,6 +95,55 @@ def run_market_scan(session: Session, as_of_date: date | None = None) -> ScanSum
         scan_run_id=scan_run.id,
         scored=len(scores),
         insufficient_data=insufficient_data,
+    )
+
+
+def _scan_context(session: Session, as_of_date: date) -> ScanContext:
+    latest_prices: dict[int, Price] = {}
+    prices = session.scalars(
+        select(Price)
+        .where(Price.trade_date <= as_of_date)
+        .order_by(Price.company_id, desc(Price.trade_date), desc(Price.id))
+    )
+    for price in prices:
+        latest_prices.setdefault(price.company_id, price)
+
+    latest_statements: dict[int, FinancialStatement] = {}
+    prior_statements: dict[int, FinancialStatement] = {}
+    statements = session.scalars(
+        select(FinancialStatement)
+        .where(FinancialStatement.period_end <= as_of_date)
+        .order_by(FinancialStatement.company_id, desc(FinancialStatement.period_end), desc(FinancialStatement.id))
+    )
+    for statement in statements:
+        latest = latest_statements.get(statement.company_id)
+        if latest is None:
+            latest_statements[statement.company_id] = statement
+            continue
+        if (
+            statement.company_id not in prior_statements
+            and statement.period_type == latest.period_type
+            and statement.period_end < latest.period_end
+        ):
+            prior_statements[statement.company_id] = statement
+
+    dividend_since = as_of_date - timedelta(days=365)
+    dividend_totals = {
+        company_id: total
+        for company_id, total in session.execute(
+            select(Dividend.company_id, func.sum(Dividend.amount_per_share)).where(
+                Dividend.payment_date.is_not(None),
+                Dividend.payment_date >= dividend_since,
+                Dividend.payment_date <= as_of_date,
+            ).group_by(Dividend.company_id)
+        )
+    }
+
+    return ScanContext(
+        latest_prices=latest_prices,
+        latest_statements=latest_statements,
+        prior_statements=prior_statements,
+        dividend_totals=dividend_totals,
     )
 
 
@@ -128,6 +192,39 @@ def calculate_ratios(session: Session, company: Company, as_of_date: date) -> Co
         )
     )
 
+    return _ratio_from_values(
+        company=company,
+        as_of_date=as_of_date,
+        latest_price=latest_price,
+        latest_statement=latest_statement,
+        prior_statement=prior_statement,
+        dividend_total=dividend_total,
+    )
+
+
+def _calculate_ratios_from_context(
+    company: Company,
+    as_of_date: date,
+    context: ScanContext,
+) -> CompanyRatio:
+    return _ratio_from_values(
+        company=company,
+        as_of_date=as_of_date,
+        latest_price=context.latest_prices.get(company.id),
+        latest_statement=context.latest_statements.get(company.id),
+        prior_statement=context.prior_statements.get(company.id),
+        dividend_total=context.dividend_totals.get(company.id),
+    )
+
+
+def _ratio_from_values(
+    company: Company,
+    as_of_date: date,
+    latest_price: Price | None,
+    latest_statement: FinancialStatement | None,
+    prior_statement: FinancialStatement | None,
+    dividend_total: Decimal | None,
+) -> CompanyRatio:
     price = latest_price.close_price if latest_price else None
     eps = _annualized_eps(latest_statement)
     pe_ratio = _safe_div(price, eps)
@@ -157,14 +254,6 @@ def calculate_ratios(session: Session, company: Company, as_of_date: date) -> Co
     )
     dividend_yield = _safe_percent(dividend_total, price)
     data_confidence = _data_confidence(latest_price, latest_statement)
-
-    session.execute(
-        delete(CompanyRatio).where(
-            CompanyRatio.company_id == company.id,
-            CompanyRatio.as_of_date == as_of_date,
-        )
-    )
-    session.flush()
 
     return CompanyRatio(
         company_id=company.id,

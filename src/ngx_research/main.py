@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
@@ -159,6 +160,13 @@ from ngx_research.services.watchlists import (
 )
 
 app = FastAPI(title=settings.app_name)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

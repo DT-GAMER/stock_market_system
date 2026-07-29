@@ -5,6 +5,14 @@ class Settings(BaseSettings):
     app_name: str = "EquityKobo"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/equitykobo"
     upload_dir: str = "./data/uploads"
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174"
+    )
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
@@ -12,6 +20,10 @@ class Settings(BaseSettings):
     ngxpulse_base_url: str = "https://www.ngxpulse.ng"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 settings = Settings()
