@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     ngxpulse_api_key: str | None = None
     ngxpulse_base_url: str = "https://www.ngxpulse.ng"
+    automation_enabled: bool = True
+    automation_run_on_startup: bool = True
+    automation_interval_minutes: int = 1440
+    automation_dividend_sync_enabled: bool = True
+    ngxpulse_request_pause_seconds: float = 3.2
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

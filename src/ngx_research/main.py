@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -28,6 +29,13 @@ from ngx_research.models import (
     ScanRun,
     SourceDocument,
     UploadedReport,
+    UserJournalEntry,
+    UserPortfolioPlan,
+    UserPortfolioPlanItem,
+    UserPortfolioTransaction,
+    UserProfile,
+    UserWatchlist,
+    UserWatchlistItem,
     Watchlist,
 )
 from ngx_research.schemas import (
@@ -39,7 +47,11 @@ from ngx_research.schemas import (
     AuthTokenRead,
     CompanyCoverageRead,
     CompanyCreate,
+    CompanyMemoryRead,
+    CompanyPeerComparisonRead,
     CompanyRead,
+    CompanyValuationRead,
+    DecisionCardRead,
     DividendCandidateRead,
     DividendHistoryRead,
     DividendImportValidationResult,
@@ -49,6 +61,8 @@ from ngx_research.schemas import (
     FinancialStatementCreate,
     FinancialStatementRead,
     ImportResult,
+    IntelligenceOpportunityRead,
+    IntelligenceRunRead,
     InvestmentBriefRead,
     InvestmentGoalCreate,
     InvestmentGoalRead,
@@ -60,8 +74,10 @@ from ngx_research.schemas import (
     NgxMarketRuleRead,
     NgxPulseMarketOverviewRead,
     NgxPulseSyncResult,
+    PeerComparisonRunRead,
     PendingReviewItem,
     PortfolioExitIntelligenceRead,
+    PortfolioPositionRead,
     PortfolioSummaryRead,
     PortfolioTransactionCreate,
     PortfolioTransactionRead,
@@ -76,12 +92,23 @@ from ngx_research.schemas import (
     ReviewResult,
     ScanRunRead,
     ScoreRead,
+    SectorAllocationRead,
     SourceDocumentCreate,
     SourceDocumentRead,
     UploadedReportRead,
     UserCreate,
+    UserJournalEntryCreate,
+    UserJournalEntryRead,
     UserLogin,
+    UserPortfolioPlanItemRead,
+    UserPortfolioPlanRead,
+    UserPortfolioPlanUpsert,
+    UserProfileRead,
+    UserProfileUpsert,
     UserRead,
+    UserWatchlistRead,
+    UserWatchlistUpsert,
+    ValuationRunRead,
     WatchlistActionRead,
     WatchlistCreate,
     WatchlistDetailRead,
@@ -104,12 +131,18 @@ from ngx_research.services.auth import (
     revoke_bearer_token,
     user_from_bearer_token,
 )
+from ngx_research.services.automation_scheduler import (
+    automation_status,
+    run_automation_once,
+    start_automation_scheduler,
+)
 from ngx_research.services.csv_importer import (
     import_companies,
     import_dividends,
     import_financial_statements,
     import_prices,
 )
+from ngx_research.services.decision_card_engine import decision_card
 from ngx_research.services.decision_intelligence import (
     create_investment_goal,
     list_investment_goals,
@@ -123,6 +156,12 @@ from ngx_research.services.dividend_engine import (
     validate_dividend_csv,
 )
 from ngx_research.services.exports import export_dataset_csv
+from ngx_research.services.financial_section_extractor import select_financial_section
+from ngx_research.services.intelligence_engine import (
+    company_memory,
+    latest_intelligence_opportunities,
+    run_intelligence_engine,
+)
 from ngx_research.services.investment_journal import (
     company_brief,
     create_note,
@@ -136,10 +175,25 @@ from ngx_research.services.investment_rules import (
 from ngx_research.services.ngxpulse_client import (
     NgxPulseError,
     fetch_market_overview,
+    fetch_market_status,
     sync_all_stocks,
+    sync_bond_auctions,
+    sync_bonds,
+    sync_disclosures,
+    sync_dividend_history,
+    sync_etfs,
+    sync_fundamentals,
+    sync_indices,
+    sync_market_news,
+    sync_nasd_otc_stocks,
     sync_symbol_prices,
 )
 from ngx_research.services.pdf_extractor import PdfExtractionError, extract_pdf_text
+from ngx_research.services.peer_comparison_engine import (
+    company_peer_comparison,
+    latest_peer_comparisons,
+    run_peer_comparison_engine,
+)
 from ngx_research.services.portfolio import create_transaction, list_transactions, portfolio_summary
 from ngx_research.services.price_workflow import (
     latest_prices,
@@ -151,6 +205,11 @@ from ngx_research.services.report_storage import save_upload
 from ngx_research.services.research_digest import build_research_digest
 from ngx_research.services.scanner import run_market_scan
 from ngx_research.services.source_coverage import build_company_coverage, build_coverage
+from ngx_research.services.valuation_engine import (
+    company_valuation,
+    latest_valuations,
+    run_valuation_engine,
+)
 from ngx_research.services.watchlists import (
     add_to_watchlist,
     create_watchlist,
@@ -170,8 +229,9 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     init_db()
+    start_automation_scheduler()
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -187,6 +247,16 @@ ReportNotes = Annotated[str | None, Form()]
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/automation/status")
+def get_automation_status() -> dict:
+    return automation_status()
+
+
+@app.post("/automation/run-now")
+async def run_automation_now() -> dict:
+    return await run_automation_once()
 
 
 def _current_user(session: SessionDep, authorization: AuthorizationHeader = None) -> UserRead:
@@ -232,6 +302,216 @@ def logout(session: SessionDep, authorization: AuthorizationHeader = None) -> di
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return {"status": "logged_out"}
+
+
+@app.get("/me/profile", response_model=UserProfileRead)
+def my_profile(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserProfile:
+    return _user_profile(session, current_user.id)
+
+
+@app.put("/me/profile", response_model=UserProfileRead)
+def save_my_profile(
+    payload: UserProfileUpsert,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserProfile:
+    profile = _user_profile(session, current_user.id)
+    profile.investor_goal = payload.investor_goal
+    profile.experience_level = payload.experience_level
+    profile.capital_range = payload.capital_range
+    profile.preferred_sectors = payload.preferred_sectors
+    profile.onboarding_completed = payload.onboarding_completed
+    session.commit()
+    session.refresh(profile)
+    return profile
+
+
+@app.get("/me/watchlist", response_model=UserWatchlistRead)
+def my_watchlist(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserWatchlistRead:
+    watchlist = _user_watchlist(session, current_user.id)
+    symbols = list(
+        session.scalars(
+            select(UserWatchlistItem.symbol)
+            .where(UserWatchlistItem.user_watchlist_id == watchlist.id)
+            .order_by(UserWatchlistItem.created_at)
+        )
+    )
+    return UserWatchlistRead(id=watchlist.id, name=watchlist.name, symbols=symbols)
+
+
+@app.put("/me/watchlist", response_model=UserWatchlistRead)
+def save_my_watchlist(
+    payload: UserWatchlistUpsert,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserWatchlistRead:
+    watchlist = _user_watchlist(session, current_user.id, name=payload.name)
+    session.query(UserWatchlistItem).filter(
+        UserWatchlistItem.user_watchlist_id == watchlist.id
+    ).delete()
+    seen: set[str] = set()
+    for symbol in payload.symbols:
+        normalized = symbol.strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            session.add(UserWatchlistItem(user_watchlist_id=watchlist.id, symbol=normalized))
+    session.commit()
+    return UserWatchlistRead(id=watchlist.id, name=watchlist.name, symbols=list(seen))
+
+
+@app.get("/me/journal", response_model=list[UserJournalEntryRead])
+def my_journal(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> list[UserJournalEntry]:
+    return list(
+        session.scalars(
+            select(UserJournalEntry)
+            .where(UserJournalEntry.user_id == current_user.id)
+            .order_by(desc(UserJournalEntry.created_at))
+        )
+    )
+
+
+@app.post("/me/journal", response_model=UserJournalEntryRead)
+def create_my_journal_entry(
+    payload: UserJournalEntryCreate,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserJournalEntry:
+    entry = UserJournalEntry(
+        user_id=current_user.id,
+        symbol=payload.symbol.strip().upper(),
+        thesis=payload.thesis.strip(),
+        goal=payload.goal,
+        horizon=payload.horizon,
+        target_entry=payload.target_entry,
+        exit_rule=payload.exit_rule,
+        risk=payload.risk,
+        status=payload.status,
+    )
+    if not entry.symbol or not entry.thesis:
+        raise HTTPException(status_code=400, detail="symbol and thesis are required")
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+
+@app.delete("/me/journal/{entry_id}")
+def delete_my_journal_entry(
+    entry_id: int,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> dict[str, str]:
+    entry = session.get(UserJournalEntry, entry_id)
+    if not entry or entry.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="journal entry not found")
+    session.delete(entry)
+    session.commit()
+    return {"status": "deleted"}
+
+
+@app.get("/me/portfolio-plan", response_model=UserPortfolioPlanRead)
+def my_portfolio_plan(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserPortfolioPlanRead:
+    plan = _user_portfolio_plan(session, current_user.id)
+    return _portfolio_plan_read(session, plan)
+
+
+@app.put("/me/portfolio-plan", response_model=UserPortfolioPlanRead)
+def save_my_portfolio_plan(
+    payload: UserPortfolioPlanUpsert,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> UserPortfolioPlanRead:
+    plan = _user_portfolio_plan(session, current_user.id, name=payload.name)
+    session.query(UserPortfolioPlanItem).filter(
+        UserPortfolioPlanItem.user_portfolio_plan_id == plan.id
+    ).delete()
+    for item in payload.items:
+        normalized = item.symbol.strip().upper()
+        if normalized:
+            session.add(
+                UserPortfolioPlanItem(
+                    user_portfolio_plan_id=plan.id,
+                    symbol=normalized,
+                    planned_amount=item.planned_amount,
+                )
+            )
+    session.commit()
+    return _portfolio_plan_read(session, plan)
+
+
+@app.post("/me/portfolio/transactions", response_model=PortfolioTransactionRead)
+def create_my_portfolio_transaction(
+    payload: PortfolioTransactionCreate,
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> PortfolioTransactionRead:
+    company = _company_by_symbol(session, payload.symbol)
+    try:
+        _validate_portfolio_transaction(
+            payload.transaction_type,
+            payload.quantity,
+            payload.price_per_share,
+            payload.fees,
+            payload.cash_amount,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    transaction = UserPortfolioTransaction(
+        user_id=current_user.id,
+        company_id=company.id,
+        transaction_date=payload.transaction_date,
+        transaction_type=payload.transaction_type.upper(),
+        quantity=payload.quantity,
+        price_per_share=payload.price_per_share,
+        fees=payload.fees,
+        cash_amount=payload.cash_amount,
+        notes=payload.notes,
+    )
+    session.add(transaction)
+    session.commit()
+    session.refresh(transaction)
+    return _user_portfolio_transaction_read(transaction, company.symbol)
+
+
+@app.get("/me/portfolio/transactions", response_model=list[PortfolioTransactionRead])
+def my_portfolio_transactions(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+    limit: int = 100,
+) -> list[PortfolioTransactionRead]:
+    rows = session.execute(
+        select(UserPortfolioTransaction, Company.symbol)
+        .join(Company, Company.id == UserPortfolioTransaction.company_id)
+        .where(UserPortfolioTransaction.user_id == current_user.id)
+        .order_by(
+            desc(UserPortfolioTransaction.transaction_date),
+            desc(UserPortfolioTransaction.id),
+        )
+        .limit(limit)
+    )
+    return [
+        _user_portfolio_transaction_read(transaction, symbol) for transaction, symbol in rows
+    ]
+
+
+@app.get("/me/portfolio/summary", response_model=PortfolioSummaryRead)
+def my_portfolio_summary(
+    session: SessionDep,
+    current_user: Annotated[UserRead, Depends(_current_user)],
+) -> PortfolioSummaryRead:
+    return _user_portfolio_summary(session, current_user.id)
 
 
 @app.post("/companies", response_model=CompanyRead)
@@ -545,6 +825,14 @@ async def ngxpulse_market_overview() -> NgxPulseMarketOverviewRead:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.get("/integrations/ngxpulse/market-status", response_model=NgxPulseMarketOverviewRead)
+async def ngxpulse_market_status(session: SessionDep) -> NgxPulseMarketOverviewRead:
+    try:
+        return NgxPulseMarketOverviewRead(data=await fetch_market_status(session))
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/integrations/ngxpulse/sync/stocks", response_model=NgxPulseSyncResult)
 async def sync_ngxpulse_stocks(
     session: SessionDep,
@@ -552,6 +840,95 @@ async def sync_ngxpulse_stocks(
 ) -> NgxPulseSyncResult:
     try:
         return await sync_all_stocks(session, trade_date=trade_date)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/fundamentals", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_fundamentals(
+    session: SessionDep,
+    symbols: str | None = None,
+    as_of_date: date | None = None,
+) -> NgxPulseSyncResult:
+    symbol_list = [symbol.strip().upper() for symbol in symbols.split(",") if symbol.strip()] if symbols else None
+    try:
+        return await sync_fundamentals(session, symbols=symbol_list, as_of_date=as_of_date)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/dividends/{symbol}", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_dividends(symbol: str, session: SessionDep) -> NgxPulseSyncResult:
+    try:
+        return await sync_dividend_history(session, symbol)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/disclosures", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_disclosures(session: SessionDep, limit: int | None = None) -> NgxPulseSyncResult:
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    try:
+        return await sync_disclosures(session, limit=limit)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/indices", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_indices(session: SessionDep) -> NgxPulseSyncResult:
+    try:
+        return await sync_indices(session)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/etfs", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_etfs(session: SessionDep) -> NgxPulseSyncResult:
+    try:
+        return await sync_etfs(session)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/bonds", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_bonds(session: SessionDep) -> NgxPulseSyncResult:
+    try:
+        return await sync_bonds(session)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/bond-auctions", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_bond_auctions(
+    session: SessionDep,
+    limit: int | None = 50,
+) -> NgxPulseSyncResult:
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    try:
+        return await sync_bond_auctions(session, limit=limit)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/nasd-otc/stocks", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_nasd_otc_stocks(session: SessionDep) -> NgxPulseSyncResult:
+    try:
+        return await sync_nasd_otc_stocks(session)
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/integrations/ngxpulse/sync/news", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_market_news(
+    session: SessionDep,
+    limit: int | None = 50,
+) -> NgxPulseSyncResult:
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    try:
+        return await sync_market_news(session, limit=limit)
     except NgxPulseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -644,6 +1021,32 @@ def list_reports(session: SessionDep, limit: int = 100) -> list[UploadedReport]:
     return list(
         session.scalars(select(UploadedReport).order_by(desc(UploadedReport.created_at)).limit(limit))
     )
+
+
+@app.delete("/reports/{report_id}")
+def delete_report(report_id: int, session: SessionDep) -> dict[str, str]:
+    report = session.get(UploadedReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="uploaded report not found")
+
+    source_id = report.source_document_id
+    stored_path = report.stored_path
+    session.query(ExtractionDraft).filter(ExtractionDraft.uploaded_report_id == report.id).delete()
+    session.query(ReportTextExtraction).filter(ReportTextExtraction.uploaded_report_id == report.id).delete()
+    session.delete(report)
+    session.flush()
+
+    source_has_other_records = session.scalar(
+        select(UploadedReport.id).where(UploadedReport.source_document_id == source_id).limit(1)
+    )
+    if not source_has_other_records:
+        source = session.get(SourceDocument, source_id)
+        if source:
+            session.delete(source)
+
+    session.commit()
+    _delete_uploaded_file(stored_path)
+    return {"status": "deleted"}
 
 
 @app.post("/reports/{report_id}/extract-text", response_model=ReportTextExtractionRead)
@@ -994,11 +1397,90 @@ def list_scores(session: SessionDep, limit: int = 100) -> list[ScoreRead]:
 @app.post("/scans/run")
 def run_scan(session: SessionDep) -> dict[str, int]:
     summary = run_market_scan(session)
+    intelligence = run_intelligence_engine(session, as_of_date=datetime.now(UTC).date(), limit=100)
+    valuation = run_valuation_engine(session, as_of_date=intelligence.as_of_date, limit=100)
+    comparison = run_peer_comparison_engine(session, as_of_date=intelligence.as_of_date, limit=100)
     return {
         "scan_run_id": summary.scan_run_id,
         "scored": summary.scored,
         "insufficient_data": summary.insufficient_data,
+        "intelligence_generated": intelligence.generated,
+        "valuations_generated": valuation.generated,
+        "comparisons_generated": comparison.generated,
     }
+
+
+@app.post("/intelligence/run", response_model=IntelligenceRunRead)
+def run_intelligence(session: SessionDep) -> IntelligenceRunRead:
+    result = run_intelligence_engine(session)
+    run_valuation_engine(session, as_of_date=result.as_of_date, limit=100)
+    run_peer_comparison_engine(session, as_of_date=result.as_of_date, limit=100)
+    return result
+
+
+@app.get("/intelligence/opportunities", response_model=list[IntelligenceOpportunityRead])
+def intelligence_opportunities(session: SessionDep, limit: int = 100) -> list[IntelligenceOpportunityRead]:
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return latest_intelligence_opportunities(session, limit=limit)
+
+
+@app.get("/intelligence/company/{symbol}/decision-card", response_model=DecisionCardRead)
+def intelligence_company_decision_card(symbol: str, session: SessionDep) -> DecisionCardRead:
+    try:
+        return decision_card(session, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/company/{symbol}/memory", response_model=CompanyMemoryRead)
+def intelligence_company_memory(symbol: str, session: SessionDep) -> CompanyMemoryRead:
+    try:
+        return company_memory(session, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/valuation/run", response_model=ValuationRunRead)
+def run_valuation(session: SessionDep) -> ValuationRunRead:
+    result = run_valuation_engine(session)
+    run_peer_comparison_engine(session, as_of_date=result.as_of_date, limit=100)
+    return result
+
+
+@app.post("/comparison/run", response_model=PeerComparisonRunRead)
+def run_comparison(session: SessionDep) -> PeerComparisonRunRead:
+    return run_peer_comparison_engine(session)
+
+
+@app.get("/comparison/latest", response_model=list[CompanyPeerComparisonRead])
+def comparison_latest(session: SessionDep, limit: int = 100) -> list[CompanyPeerComparisonRead]:
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return latest_peer_comparisons(session, limit=limit)
+
+
+@app.get("/comparison/company/{symbol}", response_model=CompanyPeerComparisonRead)
+def comparison_company(symbol: str, session: SessionDep) -> CompanyPeerComparisonRead:
+    try:
+        return company_peer_comparison(session, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/valuation/latest", response_model=list[CompanyValuationRead])
+def valuation_latest(session: SessionDep, limit: int = 100) -> list[CompanyValuationRead]:
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return latest_valuations(session, limit=limit)
+
+
+@app.get("/valuation/company/{symbol}", response_model=CompanyValuationRead)
+def valuation_company(symbol: str, session: SessionDep) -> CompanyValuationRead:
+    try:
+        return company_valuation(session, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/scans/latest", response_model=ScanRunRead)
@@ -1093,6 +1575,259 @@ def _company_by_symbol(session: Session, symbol: str | None) -> Company:
     return company
 
 
+def _user_profile(session: Session, user_id: int) -> UserProfile:
+    profile = session.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if profile:
+        return profile
+    profile = UserProfile(
+        user_id=user_id,
+        preferred_sectors=[],
+        onboarding_completed=False,
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    return profile
+
+
+def _user_watchlist(
+    session: Session,
+    user_id: int,
+    name: str = "Starter Watchlist",
+) -> UserWatchlist:
+    watchlist = session.scalar(
+        select(UserWatchlist).where(
+            UserWatchlist.user_id == user_id,
+            UserWatchlist.name == name,
+        )
+    )
+    if watchlist:
+        return watchlist
+    watchlist = UserWatchlist(user_id=user_id, name=name)
+    session.add(watchlist)
+    session.commit()
+    session.refresh(watchlist)
+    return watchlist
+
+
+def _user_portfolio_plan(
+    session: Session,
+    user_id: int,
+    name: str = "Default Plan",
+) -> UserPortfolioPlan:
+    plan = session.scalar(
+        select(UserPortfolioPlan).where(
+            UserPortfolioPlan.user_id == user_id,
+            UserPortfolioPlan.name == name,
+        )
+    )
+    if plan:
+        return plan
+    plan = UserPortfolioPlan(user_id=user_id, name=name)
+    session.add(plan)
+    session.commit()
+    session.refresh(plan)
+    return plan
+
+
+def _portfolio_plan_read(session: Session, plan: UserPortfolioPlan) -> UserPortfolioPlanRead:
+    items = list(
+        session.scalars(
+            select(UserPortfolioPlanItem)
+            .where(UserPortfolioPlanItem.user_portfolio_plan_id == plan.id)
+            .order_by(UserPortfolioPlanItem.symbol)
+        )
+    )
+    return UserPortfolioPlanRead(
+        id=plan.id,
+        name=plan.name,
+        items=[UserPortfolioPlanItemRead.model_validate(item) for item in items],
+    )
+
+
+def _user_portfolio_transaction_read(
+    transaction: UserPortfolioTransaction,
+    symbol: str,
+) -> PortfolioTransactionRead:
+    return PortfolioTransactionRead(
+        id=transaction.id,
+        symbol=symbol,
+        transaction_date=transaction.transaction_date,
+        transaction_type=transaction.transaction_type,
+        quantity=transaction.quantity,
+        price_per_share=transaction.price_per_share,
+        fees=transaction.fees,
+        cash_amount=transaction.cash_amount,
+        notes=transaction.notes,
+    )
+
+
+def _user_portfolio_summary(session: Session, user_id: int) -> PortfolioSummaryRead:
+    rows = session.execute(
+        select(UserPortfolioTransaction, Company)
+        .join(Company, Company.id == UserPortfolioTransaction.company_id)
+        .where(UserPortfolioTransaction.user_id == user_id)
+        .order_by(UserPortfolioTransaction.transaction_date, UserPortfolioTransaction.id)
+    )
+    states: dict[int, dict[str, Decimal]] = {}
+    companies: dict[int, Company] = {}
+    for transaction, company in rows:
+        companies[company.id] = company
+        state = states.setdefault(
+            company.id,
+            {
+                "quantity": Decimal(0),
+                "cost_basis": Decimal(0),
+                "dividends_received": Decimal(0),
+            },
+        )
+        _apply_user_portfolio_transaction(state, transaction)
+
+    raw_positions = []
+    total_cost_basis = Decimal(0)
+    total_market_value = Decimal(0)
+    total_dividends = Decimal(0)
+    for company_id, state in states.items():
+        if state["quantity"] <= 0 and state["dividends_received"] <= 0:
+            continue
+        company = companies[company_id]
+        latest_price = _latest_price_for_company(session, company_id)
+        market_value = (
+            (state["quantity"] * latest_price.close_price).quantize(Decimal("0.0001"))
+            if latest_price and state["quantity"] > 0
+            else None
+        )
+        total_cost_basis += state["cost_basis"]
+        total_dividends += state["dividends_received"]
+        if market_value is not None:
+            total_market_value += market_value
+        raw_positions.append((company, state, latest_price, market_value))
+
+    positions: list[PortfolioPositionRead] = []
+    sector_values: dict[str, Decimal] = {}
+    for company, state, latest_price, market_value in raw_positions:
+        unrealized = market_value - state["cost_basis"] if market_value is not None else None
+        sector = company.sector or "Unknown"
+        if market_value is not None:
+            sector_values[sector] = sector_values.get(sector, Decimal(0)) + market_value
+        positions.append(
+            PortfolioPositionRead(
+                symbol=company.symbol,
+                name=company.name,
+                sector=company.sector,
+                quantity=state["quantity"],
+                average_cost=_decimal_div(state["cost_basis"], state["quantity"]),
+                cost_basis=state["cost_basis"],
+                latest_price=latest_price.close_price if latest_price else None,
+                market_value=market_value,
+                unrealized_gain_loss=unrealized,
+                unrealized_gain_loss_percent=_decimal_percent(unrealized, state["cost_basis"]),
+                portfolio_weight=_decimal_percent(market_value, total_market_value)
+                if market_value is not None
+                else None,
+                dividends_received=state["dividends_received"],
+            )
+        )
+
+    allocation = [
+        SectorAllocationRead(
+            sector=sector,
+            market_value=value,
+            portfolio_weight=_decimal_percent(value, total_market_value) or Decimal(0),
+        )
+        for sector, value in sorted(sector_values.items(), key=lambda item: item[1], reverse=True)
+    ]
+    total_unrealized = total_market_value - total_cost_basis
+    return PortfolioSummaryRead(
+        total_cost_basis=total_cost_basis,
+        total_market_value=total_market_value,
+        total_unrealized_gain_loss=total_unrealized,
+        total_unrealized_gain_loss_percent=_decimal_percent(total_unrealized, total_cost_basis),
+        total_dividends_received=total_dividends,
+        positions=sorted(positions, key=lambda item: item.market_value or Decimal(0), reverse=True),
+        sector_allocation=allocation,
+        warnings=_user_portfolio_warnings(positions, allocation),
+    )
+
+
+def _validate_portfolio_transaction(
+    transaction_type: str,
+    quantity: Decimal,
+    price_per_share: Decimal | None,
+    fees: Decimal,
+    cash_amount: Decimal | None,
+) -> None:
+    tx_type = transaction_type.upper()
+    if tx_type not in {"BUY", "SELL", "DIVIDEND"}:
+        raise ValueError("transaction_type must be BUY, SELL, or DIVIDEND")
+    if fees < 0:
+        raise ValueError("fees cannot be negative")
+    if tx_type in {"BUY", "SELL"}:
+        if quantity <= 0:
+            raise ValueError("quantity must be greater than zero for BUY/SELL")
+        if price_per_share is None or price_per_share <= 0:
+            raise ValueError("price_per_share must be greater than zero for BUY/SELL")
+    if tx_type == "DIVIDEND" and (cash_amount is None or cash_amount <= 0):
+        raise ValueError("cash_amount must be greater than zero for DIVIDEND")
+
+
+def _apply_user_portfolio_transaction(
+    state: dict[str, Decimal],
+    transaction: UserPortfolioTransaction,
+) -> None:
+    if transaction.transaction_type == "BUY":
+        state["quantity"] += transaction.quantity
+        state["cost_basis"] += (
+            transaction.quantity * (transaction.price_per_share or Decimal(0)) + transaction.fees
+        )
+        return
+    if transaction.transaction_type == "SELL":
+        if state["quantity"] <= 0:
+            return
+        sold_quantity = min(transaction.quantity, state["quantity"])
+        average_cost = _decimal_div(state["cost_basis"], state["quantity"]) or Decimal(0)
+        state["quantity"] -= sold_quantity
+        state["cost_basis"] = max(state["cost_basis"] - (sold_quantity * average_cost), Decimal(0))
+        return
+    if transaction.transaction_type == "DIVIDEND":
+        state["dividends_received"] += transaction.cash_amount or Decimal(0)
+
+
+def _latest_price_for_company(session: Session, company_id: int) -> Price | None:
+    return session.scalar(
+        select(Price).where(Price.company_id == company_id).order_by(desc(Price.trade_date)).limit(1)
+    )
+
+
+def _decimal_div(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    if numerator is None or denominator in (None, Decimal(0)):
+        return None
+    return (numerator / denominator).quantize(Decimal("0.0001"))
+
+
+def _decimal_percent(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    value = _decimal_div(numerator, denominator)
+    if value is None:
+        return None
+    return (value * Decimal(100)).quantize(Decimal("0.0001"))
+
+
+def _user_portfolio_warnings(
+    positions: list[PortfolioPositionRead],
+    allocation: list[SectorAllocationRead],
+) -> list[str]:
+    warnings: list[str] = []
+    for position in positions:
+        if position.portfolio_weight is not None and position.portfolio_weight > Decimal(30):
+            warnings.append(f"{position.symbol} is above 30% of portfolio value.")
+        if position.latest_price is None and position.quantity > 0:
+            warnings.append(f"{position.symbol} has no latest price; market value is incomplete.")
+    for sector in allocation:
+        if sector.portfolio_weight > Decimal(50):
+            warnings.append(f"{sector.sector} exposure is above 50% of portfolio value.")
+    return warnings
+
+
 def _watchlist_by_id(session: Session, watchlist_id: int) -> Watchlist:
     watchlist = session.get(Watchlist, watchlist_id)
     if not watchlist:
@@ -1133,11 +1868,20 @@ async def _create_extraction_draft(
     uploaded_report_id: int | None,
     notes: str | None,
 ) -> ExtractionDraft:
+    selected_text, selection_warnings = select_financial_section(report_text)
     try:
-        raw_response, parsed = await extract_financial_statement(report_text)
+        raw_response, parsed = await extract_financial_statement(selected_text)
     except DeepSeekError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    draft_notes = "\n".join(
+        item
+        for item in [
+            notes,
+            "Financial-section selector: " + " ".join(selection_warnings),
+        ]
+        if item
+    )
     draft = ExtractionDraft(
         company_id=company_id,
         source_document_id=source_document_id,
@@ -1145,11 +1889,11 @@ async def _create_extraction_draft(
         extraction_type="financial_statement",
         provider="deepseek",
         model=settings.deepseek_model,
-        prompt_text=report_text[:60000],
+        prompt_text=selected_text[:60000],
         raw_response=raw_response,
         parsed_data=parsed,
         status="draft",
-        notes=notes,
+        notes=draft_notes,
     )
     session.add(draft)
     session.commit()
@@ -1170,6 +1914,13 @@ def _latest_report_text(session: Session, report_id: int) -> ReportTextExtractio
             detail="report text has not been extracted yet; call /reports/{report_id}/extract-text first",
         )
     return extraction
+
+
+def _delete_uploaded_file(stored_path: str) -> None:
+    try:
+        Path(stored_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _text_extraction_read(extraction: ReportTextExtraction) -> ReportTextExtractionRead:

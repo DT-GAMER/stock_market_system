@@ -11,6 +11,7 @@ from ngx_research.models import (
     CompanyScore,
     Dividend,
     FinancialStatement,
+    NgxPulseFundamental,
     Price,
     ScanResult,
     ScanRun,
@@ -45,6 +46,7 @@ class ScanContext:
     latest_prices: dict[int, Price]
     latest_statements: dict[int, FinancialStatement]
     prior_statements: dict[int, FinancialStatement]
+    latest_fundamentals: dict[int, NgxPulseFundamental]
     dividend_totals: dict[int, Decimal]
 
 
@@ -139,10 +141,24 @@ def _scan_context(session: Session, as_of_date: date) -> ScanContext:
         )
     }
 
+    latest_fundamentals: dict[int, NgxPulseFundamental] = {}
+    fundamentals = session.scalars(
+        select(NgxPulseFundamental)
+        .where(NgxPulseFundamental.as_of_date <= as_of_date)
+        .order_by(
+            NgxPulseFundamental.company_id,
+            desc(NgxPulseFundamental.as_of_date),
+            desc(NgxPulseFundamental.id),
+        )
+    )
+    for fundamental in fundamentals:
+        latest_fundamentals.setdefault(fundamental.company_id, fundamental)
+
     return ScanContext(
         latest_prices=latest_prices,
         latest_statements=latest_statements,
         prior_statements=prior_statements,
+        latest_fundamentals=latest_fundamentals,
         dividend_totals=dividend_totals,
     )
 
@@ -167,6 +183,12 @@ def calculate_ratios(session: Session, company: Company, as_of_date: date) -> Co
         select(FinancialStatement)
         .where(FinancialStatement.company_id == company.id, FinancialStatement.period_end <= as_of_date)
         .order_by(desc(FinancialStatement.period_end))
+        .limit(1)
+    )
+    latest_fundamental = session.scalar(
+        select(NgxPulseFundamental)
+        .where(NgxPulseFundamental.company_id == company.id, NgxPulseFundamental.as_of_date <= as_of_date)
+        .order_by(desc(NgxPulseFundamental.as_of_date), desc(NgxPulseFundamental.id))
         .limit(1)
     )
     prior_statement = None
@@ -198,6 +220,7 @@ def calculate_ratios(session: Session, company: Company, as_of_date: date) -> Co
         latest_price=latest_price,
         latest_statement=latest_statement,
         prior_statement=prior_statement,
+        latest_fundamental=latest_fundamental,
         dividend_total=dividend_total,
     )
 
@@ -213,6 +236,7 @@ def _calculate_ratios_from_context(
         latest_price=context.latest_prices.get(company.id),
         latest_statement=context.latest_statements.get(company.id),
         prior_statement=context.prior_statements.get(company.id),
+        latest_fundamental=context.latest_fundamentals.get(company.id),
         dividend_total=context.dividend_totals.get(company.id),
     )
 
@@ -223,23 +247,26 @@ def _ratio_from_values(
     latest_price: Price | None,
     latest_statement: FinancialStatement | None,
     prior_statement: FinancialStatement | None,
+    latest_fundamental: NgxPulseFundamental | None,
     dividend_total: Decimal | None,
 ) -> CompanyRatio:
     price = latest_price.close_price if latest_price else None
-    eps = _annualized_eps(latest_statement)
-    pe_ratio = _safe_div(price, eps)
+    eps = _annualized_eps(latest_statement) or (
+        latest_fundamental.eps if latest_fundamental else None
+    )
+    pe_ratio = _safe_div(price, eps) or (latest_fundamental.pe_ratio if latest_fundamental else None)
     roe = _safe_percent(
         latest_statement.profit_after_tax if latest_statement else None,
         latest_statement.total_equity if latest_statement else None,
-    )
+    ) or (latest_fundamental.roe if latest_fundamental else None)
     net_margin = _safe_percent(
         latest_statement.profit_after_tax if latest_statement else None,
         latest_statement.revenue if latest_statement else None,
-    )
+    ) or (latest_fundamental.profit_margin if latest_fundamental else None)
     debt_to_equity = _safe_div(
         latest_statement.total_liabilities if latest_statement else None,
         latest_statement.total_equity if latest_statement else None,
-    )
+    ) or (latest_fundamental.debt_equity if latest_fundamental else None)
     cash_flow_to_profit = _safe_div(
         latest_statement.cash_flow_operations if latest_statement else None,
         latest_statement.profit_after_tax if latest_statement else None,
@@ -252,8 +279,10 @@ def _ratio_from_values(
         latest_statement.profit_after_tax if latest_statement else None,
         prior_statement.profit_after_tax if prior_statement else None,
     )
-    dividend_yield = _safe_percent(dividend_total, price)
-    data_confidence = _data_confidence(latest_price, latest_statement)
+    dividend_yield = _safe_percent(dividend_total, price) or (
+        latest_fundamental.dividend_yield if latest_fundamental else None
+    )
+    data_confidence = _data_confidence(latest_price, latest_statement, latest_fundamental)
 
     return CompanyRatio(
         company_id=company.id,
@@ -393,7 +422,11 @@ def _safe_growth(current: Decimal | None, previous: Decimal | None) -> Decimal |
     return (((current - previous) / abs(previous)) * HUNDRED).quantize(Decimal("0.0001"))
 
 
-def _data_confidence(price: Price | None, statement: FinancialStatement | None) -> Decimal:
+def _data_confidence(
+    price: Price | None,
+    statement: FinancialStatement | None,
+    fundamental: NgxPulseFundamental | None,
+) -> Decimal:
     score = Decimal(0)
     if price:
         score += Decimal(35) if price.reviewed else Decimal(20)
@@ -405,6 +438,17 @@ def _data_confidence(price: Price | None, statement: FinancialStatement | None) 
             statement.total_equity,
             statement.cash_flow_operations,
             statement.eps,
+        ]
+        score += Decimal(sum(1 for field in fields if field is not None) * 4)
+    elif fundamental:
+        score += Decimal(45)
+        fields = [
+            fundamental.eps,
+            fundamental.pe_ratio,
+            fundamental.roe,
+            fundamental.profit_margin,
+            fundamental.debt_equity,
+            fundamental.dividend_yield,
         ]
         score += Decimal(sum(1 for field in fields if field is not None) * 4)
     return min(score, HUNDRED)
@@ -578,7 +622,7 @@ def _hard_rejections(company: Company, ratio: CompanyRatio) -> list[str]:
     if ratio.price is None:
         rejections.append("Missing latest price.")
     if ratio.eps is None:
-        rejections.append("Missing EPS from latest financial statement.")
+        rejections.append("Missing EPS from latest financial data.")
     if ratio.data_confidence < Decimal(50):
         rejections.append("Data confidence is too low for scoring.")
     if ratio.eps is not None and ratio.eps <= Decimal(0):

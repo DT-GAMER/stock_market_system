@@ -1,0 +1,289 @@
+from datetime import date, timedelta
+from decimal import Decimal
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from ngx_research.database import Base
+from ngx_research.models import (
+    Company,
+    CompanyPeerComparisonSnapshot,
+    CompanyValuationSnapshot,
+    Dividend,
+    FinancialStatement,
+    NgxPulseFundamental,
+    Price,
+    SourceDocument,
+)
+from ngx_research.services.decision_card_engine import decision_card
+from ngx_research.services.intelligence_engine import run_intelligence_engine
+from ngx_research.services.peer_comparison_engine import (
+    company_peer_comparison,
+    run_peer_comparison_engine,
+)
+from ngx_research.services.valuation_engine import company_valuation, run_valuation_engine
+
+
+def test_decision_card_explains_company_without_vague_research_label():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            run_valuation_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            run_peer_comparison_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            card = decision_card(session, "ARADEL")
+
+            assert card.answer.startswith("YES")
+            assert card.invest_score > Decimal(70)
+            assert "Unclassified" not in card.stock_types
+            assert "Quality compounder" in card.stock_types
+            assert card.confidence in {"High", "Very High"}
+            assert len(card.health_checks) >= 6
+            assert any(item.label == "Cash flow" and item.status == "Strong" for item in card.health_checks)
+            assert any("P/E" in point for point in card.valuation.points)
+            assert card.valuation_snapshot is not None
+            assert card.valuation_snapshot.fair_value_low is not None
+            assert card.peer_comparison is not None
+            assert card.peer_comparison.peer_count == 2
+            assert card.peer_comparison.sector_rank in {1, 2}
+            assert card.peer_comparison.metric_comparisons
+            assert "Fair value range" in card.valuation.points[0]
+            assert card.why_buy.points
+            assert card.why_not_buy.points
+            assert card.what_would_change_decision.points
+            assert "No strong positive edge" not in "\n".join(card.why_buy.points)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_valuation_engine_creates_method_based_fair_value_range():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            result = run_valuation_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            rerun = run_valuation_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            valuation = company_valuation(session, "ARADEL")
+
+            assert result.generated == 2
+            assert rerun.generated == 2
+            assert session.query(CompanyValuationSnapshot).count() == 2
+            assert valuation.latest_price == Decimal("1526.8000")
+            assert valuation.fair_value_low is not None
+            assert valuation.fair_value_mid is not None
+            assert valuation.fair_value_high is not None
+            assert valuation.fair_value_low < valuation.fair_value_high
+            assert valuation.margin_of_safety_percent is not None
+            assert valuation.confidence_score > Decimal(50)
+            assert valuation.valuation_label in {
+                "Deeply Undervalued",
+                "Undervalued",
+                "Fairly Valued",
+            }
+            assert {method.name for method in valuation.methods} >= {
+                "Sector P/E comparison",
+                "Earnings power valuation",
+                "Dividend yield support",
+            }
+            assert valuation.assumptions
+            assert valuation.warnings
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_peer_comparison_engine_creates_sector_rank_and_is_rerunnable():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            run_valuation_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            result = run_peer_comparison_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            rerun = run_peer_comparison_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            comparison = company_peer_comparison(session, "ARADEL")
+
+            assert result.generated == 2
+            assert rerun.generated == 2
+            assert session.query(CompanyPeerComparisonSnapshot).count() == 2
+            assert comparison.peer_count == 2
+            assert comparison.sector_rank in {1, 2}
+            assert comparison.comparison_label in {
+                "Sector Leader",
+                "Top Sector Contender",
+                "Above Sector Average",
+                "Insufficient Peer Set",
+            }
+            assert comparison.best_overall_peer_symbol in {"ARADEL", "SEPLAT"}
+            assert comparison.category_winners
+            assert comparison.metric_comparisons
+            assert comparison.peers
+            assert comparison.strengths
+            assert comparison.reasons
+            assert comparison.next_actions
+            assert all(row.stock_types for row in comparison.peers)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def _seed_decision_card_data(session: Session) -> None:
+    source = SourceDocument(
+        name="NGX Pulse API 2026-08-03",
+        document_type="ngxpulse_market_data",
+        url="https://www.ngxpulse.ng/api",
+    )
+    company = Company(symbol="ARADEL", name="Aradel Holdings Plc", sector="OIL AND GAS")
+    peer = Company(symbol="SEPLAT", name="Seplat Energy Plc", sector="OIL AND GAS")
+    session.add_all([source, company, peer])
+    session.flush()
+
+    _prices(session, company.id, source.id, Decimal(1400), Decimal("1526.80"), 2_300_000)
+    _prices(session, peer.id, source.id, Decimal(5600), Decimal("5800.00"), 1_500_000)
+
+    session.add_all(
+        [
+            FinancialStatement(
+                company_id=company.id,
+                period_end=date(2026, 6, 30),
+                period_type="Q2",
+                revenue=Decimal(900000),
+                profit_after_tax=Decimal(240000),
+                total_assets=Decimal(2000000),
+                total_liabilities=Decimal(800000),
+                total_equity=Decimal(1200000),
+                cash_flow_operations=Decimal(290000),
+                eps=Decimal(221),
+                source_document_id=source.id,
+                reviewed=True,
+            ),
+            FinancialStatement(
+                company_id=company.id,
+                period_end=date(2025, 6, 30),
+                period_type="Q2",
+                revenue=Decimal(700000),
+                profit_after_tax=Decimal(150000),
+                total_assets=Decimal(1800000),
+                total_liabilities=Decimal(700000),
+                total_equity=Decimal(1100000),
+                cash_flow_operations=Decimal(155000),
+                eps=Decimal(160),
+                source_document_id=source.id,
+                reviewed=True,
+            ),
+            FinancialStatement(
+                company_id=peer.id,
+                period_end=date(2026, 6, 30),
+                period_type="Q2",
+                revenue=Decimal(1200000),
+                profit_after_tax=Decimal(100000),
+                total_assets=Decimal(4000000),
+                total_liabilities=Decimal(2200000),
+                total_equity=Decimal(1800000),
+                cash_flow_operations=Decimal(120000),
+                eps=Decimal(450),
+                source_document_id=source.id,
+                reviewed=True,
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            NgxPulseFundamental(
+                company_id=company.id,
+                as_of_date=date(2026, 8, 3),
+                pe_ratio=Decimal("6.90"),
+                eps=Decimal("221.00"),
+                roe=Decimal("29.00"),
+                profit_margin=Decimal("34.00"),
+                debt_equity=Decimal("0.45"),
+                dividend_yield=Decimal("5.10"),
+                raw_payload={"symbol": "ARADEL", "market_cap": "3000000000000"},
+                source_document_id=source.id,
+            ),
+            NgxPulseFundamental(
+                company_id=company.id,
+                as_of_date=date(2025, 8, 3),
+                pe_ratio=Decimal("8.50"),
+                eps=Decimal("160.00"),
+                roe=Decimal("24.00"),
+                profit_margin=Decimal("29.00"),
+                debt_equity=Decimal("0.60"),
+                dividend_yield=Decimal("4.80"),
+                raw_payload={"symbol": "ARADEL"},
+                source_document_id=source.id,
+            ),
+            NgxPulseFundamental(
+                company_id=peer.id,
+                as_of_date=date(2026, 8, 3),
+                pe_ratio=Decimal("12.40"),
+                eps=Decimal("450.00"),
+                roe=Decimal("11.00"),
+                profit_margin=Decimal("8.00"),
+                debt_equity=Decimal("1.20"),
+                dividend_yield=Decimal("2.00"),
+                raw_payload={"symbol": "SEPLAT"},
+                source_document_id=source.id,
+            ),
+        ]
+    )
+    for year, amount in ((2026, Decimal(35)), (2025, Decimal(30)), (2024, Decimal(26))):
+        session.add(
+            Dividend(
+                company_id=company.id,
+                declared_date=date(year, 3, 1),
+                payment_date=date(year, 4, 1),
+                amount_per_share=amount,
+                source_document_id=source.id,
+                reviewed=True,
+            )
+        )
+    session.commit()
+
+
+def _prices(
+    session: Session,
+    company_id: int,
+    source_id: int,
+    start: Decimal,
+    latest: Decimal,
+    volume: int,
+) -> None:
+    base_date = date(2026, 8, 3)
+    for index in range(35):
+        price = start + ((latest - start) * Decimal(index) / Decimal(34))
+        session.add(
+            Price(
+                company_id=company_id,
+                trade_date=base_date - timedelta(days=34 - index),
+                close_price=price.quantize(Decimal("0.0001")),
+                volume=volume,
+                source_document_id=source_id,
+                reviewed=True,
+            )
+        )

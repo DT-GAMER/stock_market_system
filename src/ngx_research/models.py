@@ -1,7 +1,18 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ngx_research.database import Base
@@ -49,6 +60,91 @@ class AuthToken(Base, TimestampMixin):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class UserProfile(Base, TimestampMixin):
+    __tablename__ = "user_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    investor_goal: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    experience_level: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    capital_range: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    preferred_sectors: Mapped[list[str]] = mapped_column(JSON, default=list)
+    onboarding_completed: Mapped[bool] = mapped_column(default=False, index=True)
+
+
+class UserWatchlist(Base, TimestampMixin):
+    __tablename__ = "user_watchlists"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_watchlist_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="Starter Watchlist")
+
+
+class UserWatchlistItem(Base, TimestampMixin):
+    __tablename__ = "user_watchlist_items"
+    __table_args__ = (
+        UniqueConstraint("user_watchlist_id", "symbol", name="uq_user_watchlist_symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_watchlist_id: Mapped[int] = mapped_column(ForeignKey("user_watchlists.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+
+
+class UserJournalEntry(Base, TimestampMixin):
+    __tablename__ = "user_journal_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    thesis: Mapped[str] = mapped_column(Text)
+    goal: Mapped[str] = mapped_column(String(120))
+    horizon: Mapped[str] = mapped_column(String(120))
+    target_entry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(80), default="Watching", index=True)
+
+
+class UserPortfolioPlan(Base, TimestampMixin):
+    __tablename__ = "user_portfolio_plans"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_portfolio_plan_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="Default Plan")
+
+
+class UserPortfolioPlanItem(Base, TimestampMixin):
+    __tablename__ = "user_portfolio_plan_items"
+    __table_args__ = (
+        UniqueConstraint("user_portfolio_plan_id", "symbol", name="uq_user_portfolio_plan_symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_portfolio_plan_id: Mapped[int] = mapped_column(
+        ForeignKey("user_portfolio_plans.id"), index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    planned_amount: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+
+
+class UserPortfolioTransaction(Base, TimestampMixin):
+    __tablename__ = "user_portfolio_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    transaction_date: Mapped[date] = mapped_column(Date, index=True)
+    transaction_type: Mapped[str] = mapped_column(String(32), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    price_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    fees: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    cash_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SourceDocument(Base, TimestampMixin):
@@ -295,6 +391,164 @@ class CompanyRatio(Base, TimestampMixin):
     data_confidence: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=0)
 
 
+class NgxPulseFundamental(Base, TimestampMixin):
+    __tablename__ = "ngxpulse_fundamentals"
+    __table_args__ = (UniqueConstraint("company_id", "as_of_date", name="uq_ngxpulse_fundamental_company_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    pe_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    forward_pe: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    eps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    dividend_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    beta: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    roa: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    roe: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    debt_equity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    profit_margin: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    gross_margin: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class CorporateDisclosure(Base, TimestampMixin):
+    __tablename__ = "corporate_disclosures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"), nullable=True, index=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    disclosure_type: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class MarketIndexSnapshot(Base, TimestampMixin):
+    __tablename__ = "market_index_snapshots"
+    __table_args__ = (UniqueConstraint("code", "as_of_date", name="uq_market_index_code_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(80), index=True)
+    slug: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    change_percentage: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class MarketStatusSnapshot(Base, TimestampMixin):
+    __tablename__ = "market_status_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(80), index=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class EtfSnapshot(Base, TimestampMixin):
+    __tablename__ = "etf_snapshots"
+    __table_args__ = (UniqueConstraint("symbol", "as_of_date", name="uq_etf_symbol_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    canonical_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    slug: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    isin: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    close_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    change_percentage: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value_traded: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class BondSnapshot(Base, TimestampMixin):
+    __tablename__ = "bond_snapshots"
+    __table_args__ = (UniqueConstraint("ticker", "as_of_date", name="uq_bond_ticker_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(80), index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issuer: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    issuer_type: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    bond_type: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    coupon_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    maturity_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    clean_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class BondAuctionSnapshot(Base, TimestampMixin):
+    __tablename__ = "bond_auction_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "auction_date",
+            "instrument_type",
+            "tenor_label",
+            name="uq_bond_auction_date_instrument_tenor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    auction_date: Mapped[date] = mapped_column(Date, index=True)
+    instrument_type: Mapped[str] = mapped_column(String(80), index=True)
+    tenor_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tenor_label: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    stop_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    offered_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    allotted_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    subscription_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class NasdOtcStockSnapshot(Base, TimestampMixin):
+    __tablename__ = "nasd_otc_stock_snapshots"
+    __table_args__ = (UniqueConstraint("symbol", "as_of_date", name="uq_nasd_otc_symbol_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    change_percentage: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    market_cap: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
+class MarketNewsItem(Base, TimestampMixin):
+    __tablename__ = "market_news_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(500), index=True)
+    source_name: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+
+
 class CompanyScore(Base, TimestampMixin):
     __tablename__ = "company_scores"
     __table_args__ = (UniqueConstraint("company_id", "as_of_date", name="uq_score_company_date"),)
@@ -332,3 +586,106 @@ class ScanResult(Base, TimestampMixin):
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
     score_id: Mapped[int] = mapped_column(ForeignKey("company_scores.id"), index=True)
     rank: Mapped[int] = mapped_column(index=True)
+
+
+class CompanyIntelligenceSnapshot(Base, TimestampMixin):
+    __tablename__ = "company_intelligence_snapshots"
+    __table_args__ = (
+        UniqueConstraint("company_id", "as_of_date", name="uq_company_intelligence_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    sector: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    final_label: Mapped[str] = mapped_column(String(80), index=True)
+    stock_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    business_quality_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    growth_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    valuation_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    dividend_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    financial_risk_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    momentum_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    liquidity_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    data_confidence_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    overall_score: Mapped[Decimal] = mapped_column(Numeric(5, 2), index=True)
+    reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    risks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    missing_data: Mapped[list[str]] = mapped_column(JSON, default=list)
+    next_actions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    decision_change_triggers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CompanyValuationSnapshot(Base, TimestampMixin):
+    __tablename__ = "company_valuation_snapshots"
+    __table_args__ = (
+        UniqueConstraint("company_id", "as_of_date", name="uq_company_valuation_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    intelligence_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_intelligence_snapshots.id"), nullable=True, index=True
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    sector: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    latest_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    latest_price_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    fair_value_low: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    fair_value_mid: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    fair_value_high: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    margin_of_safety_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    expected_return_low_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    expected_return_high_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    valuation_label: Mapped[str] = mapped_column(String(80), index=True)
+    valuation_confidence: Mapped[str] = mapped_column(String(80), index=True)
+    confidence_score: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=0)
+    methods: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    assumptions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    missing_data: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CompanyPeerComparisonSnapshot(Base, TimestampMixin):
+    __tablename__ = "company_peer_comparison_snapshots"
+    __table_args__ = (
+        UniqueConstraint("company_id", "as_of_date", name="uq_company_peer_comparison_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    intelligence_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_intelligence_snapshots.id"), nullable=True, index=True
+    )
+    valuation_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("company_valuation_snapshots.id"), nullable=True, index=True
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    sector: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    peer_count: Mapped[int] = mapped_column(default=0)
+    sector_rank: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sector_percentile: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    comparison_label: Mapped[str] = mapped_column(String(80), index=True)
+    best_overall_peer_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    best_overall_peer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_winners: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    metric_comparisons: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    peer_rows: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    strengths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    weaknesses: Mapped[list[str]] = mapped_column(JSON, default=list)
+    reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    next_actions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_summary: Mapped[dict] = mapped_column(JSON, default=dict)

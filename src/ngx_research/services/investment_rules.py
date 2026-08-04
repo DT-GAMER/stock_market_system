@@ -253,16 +253,23 @@ def _checklist(
         InvestmentChecklistItemRead(
             question="Is the company making money and growing?",
             passed=bool(
-                statement
-                and statement.profit_after_tax
-                and statement.profit_after_tax > 0
-                and ratio
+                ratio
                 and (
-                    (ratio.revenue_growth is not None and ratio.revenue_growth >= Decimal(0))
-                    or (ratio.profit_growth is not None and ratio.profit_growth >= Decimal(0))
+                    (
+                        statement
+                        and statement.profit_after_tax
+                        and statement.profit_after_tax > 0
+                    )
+                    or (ratio.eps is not None and ratio.eps > Decimal(0))
+                    or (
+                        ratio.roe is not None
+                        and ratio.roe > Decimal(0)
+                        and ratio.net_margin is not None
+                        and ratio.net_margin > Decimal(0)
+                    )
                 )
             ),
-            detail="Uses latest PAT plus revenue/profit growth where available.",
+            detail="Uses latest PAT where available, otherwise EPS, ROE and margin from trusted fundamentals.",
         ),
         InvestmentChecklistItemRead(
             question="Do I understand the business?",
@@ -294,8 +301,15 @@ def _decision_guardrails(
     market_rules: NgxMarketRuleRead,
 ) -> list[str]:
     guardrails: list[str] = []
-    if not all(item.passed for item in checklist):
-        guardrails.append("Do not buy yet: one or more buy-checklist items failed.")
+    failed_questions = {item.question for item in checklist if not item.passed}
+    if "Is the company making money and growing?" in failed_questions:
+        guardrails.append("Research required: earnings or growth evidence is not strong enough yet.")
+    if "Is the price fair compared to earnings?" in failed_questions:
+        guardrails.append("Valuation check needed: P/E support is missing or not attractive yet.")
+    if "Do I understand the business?" in failed_questions:
+        guardrails.append("Personal thesis needed: explain how this business makes money before buying.")
+    if "Can I hold it for 5+ years?" in failed_questions:
+        guardrails.append("Personal plan needed: write your holding period, risks, and exit rule.")
     if market_rules.price_band_status in {"Limit Up", "Near Limit Up"}:
         guardrails.append("Do not chase: stock is at or near the NGX +10% daily band.")
     if market_rules.price_band_status in {"Limit Down", "Near Limit Down"}:

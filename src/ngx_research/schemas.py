@@ -34,6 +34,73 @@ class AuthTokenRead(BaseModel):
     user: UserRead
 
 
+class UserProfileUpsert(BaseModel):
+    investor_goal: str | None = None
+    experience_level: str | None = None
+    capital_range: str | None = None
+    preferred_sectors: list[str] = Field(default_factory=list)
+    onboarding_completed: bool = False
+
+
+class UserProfileRead(UserProfileUpsert):
+    id: int
+    user_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserWatchlistUpsert(BaseModel):
+    name: str = "Starter Watchlist"
+    symbols: list[str] = Field(default_factory=list, max_length=10)
+
+
+class UserWatchlistRead(BaseModel):
+    id: int
+    name: str
+    symbols: list[str]
+
+
+class UserJournalEntryCreate(BaseModel):
+    symbol: str
+    thesis: str
+    goal: str = "Capital growth"
+    horizon: str = "3 to 5 years"
+    target_entry: str | None = None
+    exit_rule: str | None = None
+    risk: str | None = None
+    status: str = "Watching"
+
+
+class UserJournalEntryRead(UserJournalEntryCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPortfolioPlanItemUpsert(BaseModel):
+    symbol: str
+    planned_amount: Decimal = Decimal(0)
+
+
+class UserPortfolioPlanUpsert(BaseModel):
+    name: str = "Default Plan"
+    items: list[UserPortfolioPlanItemUpsert] = Field(default_factory=list)
+
+
+class UserPortfolioPlanItemRead(UserPortfolioPlanItemUpsert):
+    id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPortfolioPlanRead(BaseModel):
+    id: int
+    name: str
+    items: list[UserPortfolioPlanItemRead]
+
+
 class CompanyCreate(BaseModel):
     symbol: str
     name: str
@@ -669,3 +736,224 @@ class InvestmentRuleRead(BaseModel):
     checklist: list[InvestmentChecklistItemRead]
     decision_guardrails: list[str]
     data_warnings: list[str]
+
+
+class IntelligenceScoreBreakdownRead(BaseModel):
+    business_quality: Decimal
+    growth: Decimal
+    valuation: Decimal
+    dividend: Decimal
+    financial_risk: Decimal
+    momentum: Decimal
+    liquidity: Decimal
+    data_confidence: Decimal
+    overall: Decimal
+
+
+class CompanyMemoryRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    market_board: str | None
+    latest_price: Decimal | None
+    latest_price_date: date | None
+    price_records: int
+    dividend_records: int
+    fundamentals_records: int
+    financial_statement_records: int
+    disclosure_records: int
+    annual_report_records: int
+    latest_fundamental_date: date | None
+    latest_statement_period_end: date | None
+
+
+class IntelligenceOpportunityRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    as_of_date: date
+    final_label: str
+    stock_types: list[str]
+    scores: IntelligenceScoreBreakdownRead
+    reasons: list[str]
+    risks: list[str]
+    missing_data: list[str]
+    next_actions: list[str]
+    decision_change_triggers: list[str]
+    metrics: dict
+    memory: CompanyMemoryRead
+
+
+class IntelligenceRunRead(BaseModel):
+    as_of_date: date
+    generated: int
+    opportunities: list[IntelligenceOpportunityRead]
+
+
+class DecisionCardMetricRead(BaseModel):
+    label: str
+    status: str
+    score: Decimal | None = None
+    detail: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class DecisionCardSectionRead(BaseModel):
+    title: str
+    summary: str
+    points: list[str]
+
+
+class ValuationMethodRead(BaseModel):
+    name: str
+    fair_value_low: Decimal | None = None
+    fair_value_mid: Decimal | None = None
+    fair_value_high: Decimal | None = None
+    confidence_score: Decimal
+    reason: str
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CompanyValuationRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    as_of_date: date
+    latest_price: Decimal | None
+    latest_price_date: date | None
+    fair_value_low: Decimal | None
+    fair_value_mid: Decimal | None
+    fair_value_high: Decimal | None
+    margin_of_safety_percent: Decimal | None
+    expected_return_low_percent: Decimal | None
+    expected_return_high_percent: Decimal | None
+    valuation_label: str
+    valuation_confidence: str
+    confidence_score: Decimal
+    methods: list[ValuationMethodRead]
+    assumptions: list[str]
+    reasons: list[str]
+    warnings: list[str]
+    missing_data: list[str]
+    metrics: dict
+    source_summary: dict
+
+
+class ValuationRunRead(BaseModel):
+    as_of_date: date
+    generated: int
+    valuations: list[CompanyValuationRead]
+
+
+class PeerCategoryWinnerRead(BaseModel):
+    category: str
+    symbol: str | None = None
+    name: str | None = None
+    value: Decimal | None = None
+    detail: str
+
+
+class PeerMetricComparisonRead(BaseModel):
+    metric: str
+    company_value: Decimal | None = None
+    sector_median: Decimal | None = None
+    best_symbol: str | None = None
+    best_value: Decimal | None = None
+    rank: int | None = None
+    peer_count: int
+    interpretation: str
+
+
+class PeerComparisonRowRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    final_label: str
+    stock_types: list[str]
+    sector_rank: int | None
+    peer_score: Decimal
+    overall_score: Decimal
+    business_quality_score: Decimal
+    growth_score: Decimal
+    valuation_score: Decimal
+    dividend_score: Decimal
+    financial_risk_score: Decimal
+    liquidity_score: Decimal
+    data_confidence_score: Decimal
+    latest_price: Decimal | None = None
+    pe_ratio: Decimal | None = None
+    roe: Decimal | None = None
+    profit_margin: Decimal | None = None
+    dividend_yield: Decimal | None = None
+    margin_of_safety_percent: Decimal | None = None
+    valuation_label: str | None = None
+
+
+class CompanyPeerComparisonRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    as_of_date: date
+    peer_count: int
+    sector_rank: int | None
+    sector_percentile: Decimal | None
+    comparison_label: str
+    best_overall_peer_symbol: str | None = None
+    best_overall_peer_name: str | None = None
+    category_winners: list[PeerCategoryWinnerRead]
+    metric_comparisons: list[PeerMetricComparisonRead]
+    peers: list[PeerComparisonRowRead]
+    strengths: list[str]
+    weaknesses: list[str]
+    reasons: list[str]
+    warnings: list[str]
+    next_actions: list[str]
+    metrics: dict
+    source_summary: dict
+
+
+class PeerComparisonRunRead(BaseModel):
+    as_of_date: date
+    generated: int
+    comparisons: list[CompanyPeerComparisonRead]
+
+
+class DecisionCardRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    as_of_date: date
+    latest_price: Decimal | None
+    latest_price_date: date | None
+    stock_types: list[str]
+    answer: str
+    invest_score: Decimal
+    confidence: str
+    confidence_score: Decimal
+    risk_level: str
+    suggested_horizon: str
+    valuation_status: str
+    financial_health: str
+    dividend_quality: str
+    moat_rating: str
+    one_paragraph_summary: str
+    decision_summary: str
+    score_breakdown: IntelligenceScoreBreakdownRead
+    valuation_snapshot: CompanyValuationRead | None = None
+    peer_comparison: CompanyPeerComparisonRead | None = None
+    health_checks: list[DecisionCardMetricRead]
+    valuation: DecisionCardSectionRead
+    why_buy: DecisionCardSectionRead
+    why_not_buy: DecisionCardSectionRead
+    growth_drivers: DecisionCardSectionRead
+    threats: DecisionCardSectionRead
+    dividend: DecisionCardSectionRead
+    moat: DecisionCardSectionRead
+    future_outlook: DecisionCardSectionRead
+    stress_test: DecisionCardSectionRead
+    portfolio_fit: DecisionCardSectionRead
+    what_changed: DecisionCardSectionRead
+    what_would_change_decision: DecisionCardSectionRead
+    missing_data: list[str]
+    data_quality_notes: list[str]
