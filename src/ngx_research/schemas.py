@@ -804,6 +804,74 @@ class DecisionCardSectionRead(BaseModel):
     points: list[str]
 
 
+class DecisionCardValuationDisplayRead(BaseModel):
+    is_available: bool
+    latest_price: Decimal | None = None
+    fair_value_low: Decimal | None = None
+    fair_value_mid: Decimal | None = None
+    fair_value_high: Decimal | None = None
+    valuation_label: str
+    valuation_tone: str
+    margin_of_safety_percent: Decimal | None = None
+    expected_return_low_percent: Decimal | None = None
+    expected_return_high_percent: Decimal | None = None
+    valuation_confidence: str
+    confidence_score: Decimal
+    price_position_percent: Decimal | None = None
+    methods_used: list[str]
+    explanation: str
+    warnings: list[str] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list)
+
+
+class DecisionCardHealthDisplayRead(BaseModel):
+    label: str
+    status: str
+    tone: str
+    detail: str
+    score: Decimal | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class DecisionCardDividendYearRead(BaseModel):
+    year: int
+    amount_per_share: Decimal
+    event_count: int
+
+
+class DecisionCardDividendDisplayRead(BaseModel):
+    is_available: bool
+    current_yield: Decimal | None = None
+    dividend_strength: str
+    payout_safety: str
+    projected_next_payout: Decimal | None = None
+    years_with_dividends: int
+    annual_history: list[DecisionCardDividendYearRead]
+    explanation: str
+    warnings: list[str] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list)
+
+
+class DecisionCardMoatDisplayRead(BaseModel):
+    rating: str
+    label: str
+    tone: str
+    peer_strength_score: Decimal | None = None
+    summary: str
+    factors: list[str]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DecisionCardSourceGapRead(BaseModel):
+    data_layer: str
+    status: str
+    priority: str
+    why_it_matters: str
+    current_coverage: str
+    suggested_source: str
+    next_step: str
+
+
 class ValuationMethodRead(BaseModel):
     name: str
     fair_value_low: Decimal | None = None
@@ -919,6 +987,76 @@ class PeerComparisonRunRead(BaseModel):
     comparisons: list[CompanyPeerComparisonRead]
 
 
+class DecisionDashboardSummaryRead(BaseModel):
+    companies_scanned: int
+    research_candidates: int
+    dividend_candidates: int
+    undervalued_quality: int
+    sector_leaders: int
+    watch_for_entry: int
+    avoid_or_needs_data: int
+
+
+class DecisionDashboardOpportunityRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    as_of_date: date
+    answer: str
+    tone: str
+    final_label: str
+    invest_score: Decimal
+    confidence: str
+    confidence_score: Decimal
+    risk_level: str
+    suggested_horizon: str
+    latest_price: Decimal | None = None
+    latest_price_date: date | None = None
+    fair_value_mid: Decimal | None = None
+    margin_of_safety_percent: Decimal | None = None
+    valuation_label: str | None = None
+    valuation_confidence: str | None = None
+    peer_rank: int | None = None
+    peer_count: int | None = None
+    peer_label: str | None = None
+    best_peer_symbol: str | None = None
+    stock_types: list[str]
+    category_tags: list[str]
+    why_attention: str
+    main_risk: str
+    next_action: str
+    reasons: list[str]
+    risks: list[str]
+    next_actions: list[str]
+    missing_data: list[str]
+    scores: IntelligenceScoreBreakdownRead
+    metrics: dict
+
+
+class DecisionDashboardSpotlightRead(BaseModel):
+    key: str
+    title: str
+    subtitle: str
+    opportunity: DecisionDashboardOpportunityRead | None = None
+
+
+class DecisionDashboardCategoryRead(BaseModel):
+    key: str
+    title: str
+    summary: str
+    items: list[DecisionDashboardOpportunityRead]
+
+
+class DecisionDashboardRead(BaseModel):
+    as_of_date: date
+    generated_at: datetime
+    market_summary: DecisionDashboardSummaryRead
+    spotlight_cards: list[DecisionDashboardSpotlightRead]
+    categories: list[DecisionDashboardCategoryRead]
+    ranked: list[DecisionDashboardOpportunityRead]
+    data_notes: list[str]
+
+
 class DecisionCardRead(BaseModel):
     symbol: str
     name: str
@@ -943,6 +1081,11 @@ class DecisionCardRead(BaseModel):
     valuation_snapshot: CompanyValuationRead | None = None
     peer_comparison: CompanyPeerComparisonRead | None = None
     health_checks: list[DecisionCardMetricRead]
+    valuation_display: DecisionCardValuationDisplayRead
+    health_display: list[DecisionCardHealthDisplayRead]
+    dividend_display: DecisionCardDividendDisplayRead
+    moat_display: DecisionCardMoatDisplayRead
+    source_gaps: list[DecisionCardSourceGapRead]
     valuation: DecisionCardSectionRead
     why_buy: DecisionCardSectionRead
     why_not_buy: DecisionCardSectionRead
@@ -957,3 +1100,68 @@ class DecisionCardRead(BaseModel):
     what_would_change_decision: DecisionCardSectionRead
     missing_data: list[str]
     data_quality_notes: list[str]
+
+
+class CompanyLivePriceRead(BaseModel):
+    latest_price: Decimal | None = None
+    previous_close: Decimal | None = None
+    price_change: Decimal | None = None
+    price_change_percent: Decimal | None = None
+    trade_date: date | None = None
+    direction: str
+    label: str
+    summary: str
+
+
+class CompanyPerformanceWindowRead(BaseModel):
+    window: str
+    available: bool
+    start_date: date | None = None
+    end_date: date | None = None
+    start_price: Decimal | None = None
+    end_price: Decimal | None = None
+    return_percent: Decimal | None = None
+    summary: str
+
+
+class CompanyLiveNewsItemRead(BaseModel):
+    title: str
+    source_name: str | None = None
+    published_at: datetime | None = None
+    url: str | None = None
+    summary: str | None = None
+    item_type: str
+
+
+class CompanyLiveInsightCardRead(BaseModel):
+    key: str
+    title: str
+    tone: str
+    summary: str
+    points: list[str]
+    source_count: int
+    generated_from: list[str]
+
+
+class CompanyLivePerformanceRead(BaseModel):
+    headline: str
+    summary: str
+    sector_rank_1m: int | None = None
+    sector_peer_count: int | None = None
+    fifty_two_week_high: Decimal | None = None
+    fifty_two_week_low: Decimal | None = None
+    position_in_52_week_range_percent: Decimal | None = None
+    windows: list[CompanyPerformanceWindowRead]
+
+
+class CompanyLiveInsightsRead(BaseModel):
+    symbol: str
+    name: str
+    sector: str | None
+    generated_at: datetime
+    price: CompanyLivePriceRead
+    performance: CompanyLivePerformanceRead
+    cards: list[CompanyLiveInsightCardRead]
+    recent_news: list[CompanyLiveNewsItemRead]
+    recent_disclosures: list[CompanyLiveNewsItemRead]
+    data_notes: list[str]

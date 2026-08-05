@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from ngx_research.models import Company, CompanyIntelligenceSnapshot
+from ngx_research.models import Company, CompanyIntelligenceSnapshot, Dividend
 from ngx_research.schemas import (
+    CompanyPeerComparisonRead,
     CompanyValuationRead,
+    DecisionCardDividendDisplayRead,
+    DecisionCardDividendYearRead,
+    DecisionCardHealthDisplayRead,
     DecisionCardMetricRead,
+    DecisionCardMoatDisplayRead,
     DecisionCardRead,
     DecisionCardSectionRead,
+    DecisionCardSourceGapRead,
+    DecisionCardValuationDisplayRead,
     IntelligenceScoreBreakdownRead,
 )
 from ngx_research.services.peer_comparison_engine import (
@@ -57,10 +65,13 @@ def decision_card(session: Session, symbol: str) -> DecisionCardRead:
     score_breakdown = _score_breakdown(snapshot)
     confidence_score = _confidence_score(snapshot)
     latest_price = _decimal(metrics.get("latest_price"))
+    dividends = _company_dividends(session, company.id)
+    metrics = _metrics_with_live_dividend_evidence(metrics, dividends, snapshot.as_of_date, latest_price)
     valuation_row = latest_company_valuation_snapshot(session, company.id)
     valuation = valuation_snapshot_read(*valuation_row) if valuation_row else None
     peer_row = latest_company_peer_comparison_snapshot(session, company.id)
     peer_comparison = peer_comparison_snapshot_read(*peer_row) if peer_row else None
+    health_checks = _health_checks(snapshot, metrics, source_summary)
 
     return DecisionCardRead(
         symbol=company.symbol,
@@ -85,7 +96,12 @@ def decision_card(session: Session, symbol: str) -> DecisionCardRead:
         score_breakdown=score_breakdown,
         valuation_snapshot=valuation,
         peer_comparison=peer_comparison,
-        health_checks=_health_checks(snapshot, metrics, source_summary),
+        health_checks=health_checks,
+        valuation_display=_valuation_display(snapshot, metrics, valuation),
+        health_display=_health_display(health_checks),
+        dividend_display=_dividend_display(snapshot, metrics, dividends, valuation),
+        moat_display=_moat_display(company, snapshot, peer_comparison),
+        source_gaps=_source_gaps(snapshot, source_summary, valuation, peer_comparison),
         valuation=_valuation_section(snapshot, metrics, valuation),
         why_buy=_why_buy_section(snapshot),
         why_not_buy=_why_not_buy_section(company, snapshot),
@@ -114,6 +130,519 @@ def _score_breakdown(snapshot: CompanyIntelligenceSnapshot) -> IntelligenceScore
         liquidity=snapshot.liquidity_score,
         data_confidence=snapshot.data_confidence_score,
         overall=snapshot.overall_score,
+    )
+
+
+def _company_dividends(session: Session, company_id: int) -> list[Dividend]:
+    return list(
+        session.scalars(
+            select(Dividend)
+            .where(Dividend.company_id == company_id)
+            .order_by(
+                desc(Dividend.payment_date),
+                desc(Dividend.ex_dividend_date),
+                desc(Dividend.declared_date),
+                desc(Dividend.id),
+            )
+            .limit(120)
+        )
+    )
+
+
+def _metrics_with_live_dividend_evidence(
+    metrics: dict,
+    dividends: list[Dividend],
+    as_of_date: date,
+    latest_price: Decimal | None,
+) -> dict:
+    updated = dict(metrics)
+    annual_history = _annual_dividend_history(dividends)
+    if not annual_history:
+        return updated
+
+    stored_years = int(updated.get("dividend_years") or 0)
+    if len(annual_history) > stored_years:
+        updated["dividend_years"] = len(annual_history)
+
+    if _decimal(updated.get("dividend_growth")) is None and len(annual_history) >= 2:
+        updated["dividend_growth"] = _growth_percent(
+            annual_history[-1].amount_per_share,
+            annual_history[-2].amount_per_share,
+        )
+
+    if _decimal(updated.get("dividend_yield")) is None:
+        trailing_yield = _trailing_dividend_yield(dividends, as_of_date, latest_price)
+        if trailing_yield is not None:
+            updated["dividend_yield"] = trailing_yield
+
+    return updated
+
+
+def _growth_percent(current: Decimal | None, previous: Decimal | None) -> Decimal | None:
+    if current is None or previous is None or previous == 0:
+        return None
+    return ((current - previous) / abs(previous) * HUNDRED).quantize(Decimal("0.01"))
+
+
+def _trailing_dividend_yield(
+    dividends: list[Dividend],
+    as_of_date: date,
+    latest_price: Decimal | None,
+) -> Decimal | None:
+    if latest_price is None or latest_price <= 0:
+        return None
+    since = as_of_date - timedelta(days=365)
+    total = sum(
+        dividend.amount_per_share
+        for dividend in dividends
+        if dividend.payment_date and since <= dividend.payment_date <= as_of_date
+    )
+    if total <= 0:
+        return None
+    return (total / latest_price * HUNDRED).quantize(Decimal("0.0001"))
+
+
+def _valuation_display(
+    snapshot: CompanyIntelligenceSnapshot,
+    metrics: dict,
+    valuation: CompanyValuationRead | None,
+) -> DecisionCardValuationDisplayRead:
+    latest_price = valuation.latest_price if valuation else _decimal(metrics.get("latest_price"))
+    if valuation:
+        is_available = (
+            valuation.fair_value_low is not None
+            and valuation.fair_value_mid is not None
+            and valuation.fair_value_high is not None
+        )
+        methods = [method.name for method in valuation.methods]
+        explanation = (
+            f"Today's price {_fmt_money(latest_price)} is compared with midpoint "
+            f"{_fmt_money(valuation.fair_value_mid)} using {len(methods)} valuation method(s)."
+            if is_available
+            else "Fair value cannot be displayed until the missing valuation inputs are resolved."
+        )
+        return DecisionCardValuationDisplayRead(
+            is_available=is_available,
+            latest_price=latest_price,
+            fair_value_low=valuation.fair_value_low,
+            fair_value_mid=valuation.fair_value_mid,
+            fair_value_high=valuation.fair_value_high,
+            valuation_label=valuation.valuation_label,
+            valuation_tone=_valuation_tone(valuation.valuation_label),
+            margin_of_safety_percent=valuation.margin_of_safety_percent,
+            expected_return_low_percent=valuation.expected_return_low_percent,
+            expected_return_high_percent=valuation.expected_return_high_percent,
+            valuation_confidence=valuation.valuation_confidence,
+            confidence_score=valuation.confidence_score,
+            price_position_percent=_price_position_percent(
+                latest_price,
+                valuation.fair_value_low,
+                valuation.fair_value_high,
+            ),
+            methods_used=methods,
+            explanation=explanation,
+            warnings=valuation.warnings,
+            missing_data=valuation.missing_data,
+        )
+
+    missing = []
+    if latest_price is None:
+        missing.append("latest price")
+    if _decimal(metrics.get("pe_ratio")) is None:
+        missing.append("P/E ratio")
+    if _decimal(metrics.get("sector_pe_median")) is None:
+        missing.append("sector P/E median")
+    return DecisionCardValuationDisplayRead(
+        is_available=False,
+        latest_price=latest_price,
+        valuation_label=_valuation_status(snapshot, metrics),
+        valuation_tone="neutral",
+        valuation_confidence=_confidence_label(snapshot.data_confidence_score),
+        confidence_score=snapshot.data_confidence_score,
+        methods_used=[],
+        explanation="A fair-value card needs price, earnings, and sector comparison data.",
+        missing_data=_dedupe(missing or ["valuation snapshot"]),
+    )
+
+
+def _price_position_percent(
+    latest_price: Decimal | None,
+    fair_value_low: Decimal | None,
+    fair_value_high: Decimal | None,
+) -> Decimal | None:
+    if latest_price is None or fair_value_low is None or fair_value_high is None:
+        return None
+    spread = fair_value_high - fair_value_low
+    if spread <= 0:
+        return None
+    position = ((latest_price - fair_value_low) / spread * HUNDRED).quantize(Decimal("0.01"))
+    return _clamp(position)
+
+
+def _valuation_tone(label: str) -> str:
+    normalized = label.lower()
+    if "undervalued" in normalized:
+        return "positive"
+    if "fair" in normalized:
+        return "neutral"
+    if "expensive" in normalized or "overvalued" in normalized:
+        return "danger"
+    return "warning"
+
+
+def _health_display(
+    checks: list[DecisionCardMetricRead],
+) -> list[DecisionCardHealthDisplayRead]:
+    return [
+        DecisionCardHealthDisplayRead(
+            label=_health_label(check.label),
+            status=_health_status(check),
+            tone=_health_tone(_health_status(check)),
+            detail=check.detail,
+            score=check.score,
+            evidence=check.evidence,
+        )
+        for check in checks
+    ]
+
+
+def _health_label(label: str) -> str:
+    if label == "Profit and earnings":
+        return "Profit"
+    return label
+
+
+def _health_status(check: DecisionCardMetricRead) -> str:
+    status = check.status.lower()
+    label = check.label.lower()
+    if "missing" in status:
+        return "Missing"
+    if label == "debt":
+        if status == "low":
+            return "Healthy"
+        if status == "moderate":
+            return "Watch"
+        return "Weak"
+    if label == "liquidity":
+        if status == "reliable":
+            return "Healthy"
+        if status == "moderate":
+            return "Watch"
+        return "Weak"
+    if label == "data confidence":
+        if status == "high":
+            return "Healthy"
+        if status == "medium":
+            return "Watch"
+        return "Weak"
+    if label == "dividend safety":
+        if check.score is not None and check.score >= Decimal(70):
+            return "Healthy"
+        if check.score is not None and check.score >= Decimal(40):
+            return "Watch"
+        return "Weak"
+    if status in {"strong", "good"}:
+        return "Healthy"
+    if status in {"acceptable", "flat", "moderate", "medium", "incomplete"}:
+        return "Watch"
+    return "Weak"
+
+
+def _health_tone(status: str) -> str:
+    if status == "Healthy":
+        return "positive"
+    if status == "Watch":
+        return "warning"
+    if status == "Missing":
+        return "neutral"
+    return "danger"
+
+
+def _dividend_display(
+    snapshot: CompanyIntelligenceSnapshot,
+    metrics: dict,
+    dividends: list[Dividend],
+    valuation: CompanyValuationRead | None,
+) -> DecisionCardDividendDisplayRead:
+    annual_history = _annual_dividend_history(dividends)
+    current_yield = _decimal(metrics.get("dividend_yield"))
+    payout_safety = _decimal(metrics.get("payout_safety"))
+    dividend_strength = _dividend_quality(snapshot, metrics)
+    projected = _projected_next_payout(annual_history, _decimal(metrics.get("dividend_growth")))
+    missing_data: list[str] = []
+    warnings: list[str] = []
+    if current_yield is None:
+        missing_data.append("dividend yield")
+    if not annual_history:
+        missing_data.append("paid dividend events")
+    if payout_safety is None:
+        missing_data.append("payout ratio or EPS support")
+    if annual_history and len(annual_history) < 3:
+        warnings.append("Dividend history is shorter than the preferred three-year evidence window.")
+    if any(not dividend.reviewed for dividend in dividends):
+        warnings.append("Some dividend records are not manually reviewed yet.")
+    if valuation and any("dividend" in item.lower() for item in valuation.warnings):
+        warnings.append("Valuation warning: " + next(
+            item for item in valuation.warnings if "dividend" in item.lower()
+        ))
+    explanation = (
+        "Dividend view combines trailing yield, annual payments, consistency, and payout safety."
+        if annual_history or current_yield is not None
+        else "Dividend view is unavailable until dividend history and latest price are synced."
+    )
+    return DecisionCardDividendDisplayRead(
+        is_available=bool(annual_history or current_yield is not None),
+        current_yield=current_yield,
+        dividend_strength=dividend_strength,
+        payout_safety=_payout_safety_label(payout_safety),
+        projected_next_payout=projected,
+        years_with_dividends=int(metrics.get("dividend_years") or len(annual_history)),
+        annual_history=annual_history,
+        explanation=explanation,
+        warnings=_dedupe(warnings),
+        missing_data=_dedupe(missing_data),
+    )
+
+
+def _annual_dividend_history(dividends: list[Dividend]) -> list[DecisionCardDividendYearRead]:
+    yearly: dict[int, dict[str, Decimal | int]] = {}
+    for dividend in dividends:
+        event_date = dividend.payment_date or dividend.ex_dividend_date or dividend.declared_date
+        if event_date is None:
+            continue
+        record = yearly.setdefault(event_date.year, {"amount": Decimal(0), "events": 0})
+        record["amount"] = Decimal(record["amount"]) + dividend.amount_per_share
+        record["events"] = int(record["events"]) + 1
+    years = sorted(yearly)[-5:]
+    return [
+        DecisionCardDividendYearRead(
+            year=year,
+            amount_per_share=Decimal(yearly[year]["amount"]).quantize(Decimal("0.0001")),
+            event_count=int(yearly[year]["events"]),
+        )
+        for year in years
+    ]
+
+
+def _projected_next_payout(
+    annual_history: list[DecisionCardDividendYearRead],
+    dividend_growth: Decimal | None,
+) -> Decimal | None:
+    if not annual_history:
+        return None
+    latest = annual_history[-1].amount_per_share
+    if dividend_growth is None:
+        return latest
+    capped_growth = max(Decimal(-50), min(Decimal(50), dividend_growth))
+    return (latest * (Decimal(1) + capped_growth / HUNDRED)).quantize(Decimal("0.0001"))
+
+
+def _payout_safety_label(payout_safety: Decimal | None) -> str:
+    if payout_safety is None:
+        return "Needs EPS or payout-ratio evidence"
+    if payout_safety >= Decimal(75):
+        return "Covered by earnings"
+    if payout_safety >= Decimal(55):
+        return "Partly covered; review payout ratio"
+    return "Coverage weak or unproven"
+
+
+def _moat_display(
+    company: Company,
+    snapshot: CompanyIntelligenceSnapshot,
+    peer_comparison: CompanyPeerComparisonRead | None,
+) -> DecisionCardMoatDisplayRead:
+    rating = _moat_rating(snapshot)
+    peer_score = (
+        _decimal(peer_comparison.metrics.get("peer_score"))
+        if peer_comparison and peer_comparison.metrics
+        else snapshot.business_quality_score
+    )
+    factors = []
+    if "Blue chip candidate" in snapshot.stock_types:
+        factors.append("Scale, liquidity, and market visibility support blue-chip evidence.")
+    if "Quality compounder" in snapshot.stock_types:
+        factors.append("ROE, margin, cash-flow, and balance-sheet signals support quality evidence.")
+    factors.extend(_sector_moat_factors(company.sector))
+    warnings: list[str] = []
+    if rating in {"Unproven", "Weak"}:
+        warnings.append("Moat needs qualitative confirmation from annual reports and disclosures.")
+    if peer_comparison and peer_comparison.weaknesses:
+        warnings.append("Peer weakness to review: " + peer_comparison.weaknesses[0])
+    return DecisionCardMoatDisplayRead(
+        rating=rating,
+        label=_moat_label(rating),
+        tone=_moat_tone(rating),
+        peer_strength_score=peer_score,
+        summary=f"{company.symbol}'s competitive advantage is currently rated {rating.lower()}.",
+        factors=_dedupe(factors),
+        warnings=_dedupe(warnings),
+    )
+
+
+def _moat_label(rating: str) -> str:
+    if rating in {"Very Strong", "Strong"}:
+        return "Durable advantage"
+    if rating == "Developing":
+        return "Developing advantage"
+    if rating == "Weak":
+        return "Weak advantage"
+    return "Unproven advantage"
+
+
+def _moat_tone(rating: str) -> str:
+    if rating in {"Very Strong", "Strong"}:
+        return "positive"
+    if rating == "Developing":
+        return "warning"
+    if rating == "Weak":
+        return "danger"
+    return "neutral"
+
+
+def _source_gaps(
+    snapshot: CompanyIntelligenceSnapshot,
+    source_summary: dict,
+    valuation: CompanyValuationRead | None,
+    peer_comparison: CompanyPeerComparisonRead | None,
+) -> list[DecisionCardSourceGapRead]:
+    gap_names = list(snapshot.missing_data)
+    if valuation:
+        gap_names.extend(valuation.missing_data)
+    else:
+        gap_names.append("valuation snapshot")
+    if not peer_comparison:
+        gap_names.append("peer comparison")
+    elif peer_comparison.peer_count < 5:
+        gap_names.append("sector peer set")
+
+    gaps = [
+        _source_gap_read(name, source_summary)
+        for name in _dedupe([item.lower() for item in gap_names])
+    ]
+    priority_order = {"High": 0, "Medium": 1, "Low": 2}
+    return sorted(gaps, key=lambda item: (priority_order[item.priority], item.data_layer))
+
+
+def _source_gap_read(name: str, source_summary: dict) -> DecisionCardSourceGapRead:
+    specs = {
+        "price history": (
+            "High",
+            "Without price history, the system cannot judge entry price, volatility, liquidity, or 52-week context.",
+            "NGX Pulse stock price and historical price endpoints",
+            "Run the daily price sync for this symbol and keep at least 90 recent trading days.",
+            f"{int(source_summary.get('price_records') or 0)} price records stored.",
+        ),
+        "latest price": (
+            "High",
+            "Latest price anchors valuation, margin of safety, dividend yield, and portfolio value.",
+            "NGX Pulse stock price endpoint",
+            "Sync latest stock prices before running valuation and intelligence.",
+            f"Latest price date: {source_summary.get('latest_price_date') or 'none'}.",
+        ),
+        "ngx pulse fundamentals": (
+            "High",
+            "Fundamentals provide EPS, P/E, ROE, margins, dividend yield, beta, and balance-sheet ratios.",
+            "NGX Pulse fundamentals endpoint",
+            "Sync fundamentals for this company and its sector peers.",
+            f"{int(source_summary.get('fundamentals_records') or 0)} fundamentals records stored.",
+        ),
+        "annual financial statements": (
+            "High",
+            "Audited statements validate revenue, profit, assets, liabilities, equity, cash flow, and EPS trends.",
+            "Company annual reports, NGX disclosures, or admin report extraction",
+            "Add at least five years of annual financial statements where possible.",
+            f"{int(source_summary.get('financial_statement_records') or 0)} statement records stored.",
+        ),
+        "dividend history": (
+            "Medium",
+            "Dividend history shows consistency, income reliability, and payout-growth behavior.",
+            "NGX Pulse dividend history endpoint",
+            "Sync dividends, then review unusual records against company announcements.",
+            f"{int(source_summary.get('dividend_records') or 0)} dividend records stored.",
+        ),
+        "paid dividend events": (
+            "Medium",
+            "Annual dividend bars need actual declared or paid dividend events.",
+            "NGX Pulse dividend history endpoint",
+            "Sync dividend history for this symbol.",
+            f"{int(source_summary.get('dividend_records') or 0)} dividend records stored.",
+        ),
+        "p/e ratio": (
+            "High",
+            "P/E connects price to earnings and powers valuation and sector comparison.",
+            "NGX Pulse fundamentals, or latest price plus EPS from financial statements",
+            "Sync fundamentals or add EPS from the latest report.",
+            f"Latest fundamentals date: {source_summary.get('latest_fundamental_date') or 'none'}.",
+        ),
+        "eps": (
+            "High",
+            "EPS is needed to value the business using earnings power.",
+            "NGX Pulse fundamentals or annual/interim financial statements",
+            "Add EPS from audited or interim results.",
+            f"Latest statement period: {source_summary.get('latest_statement_period_end') or 'none'}.",
+        ),
+        "roe": (
+            "High",
+            "ROE helps decide whether profits are efficient or merely large.",
+            "NGX Pulse fundamentals or PAT and equity from financial statements",
+            "Sync ROE or add PAT and equity from the latest report.",
+            f"Latest fundamentals date: {source_summary.get('latest_fundamental_date') or 'none'}.",
+        ),
+        "sector p/e median": (
+            "Medium",
+            "Sector median P/E prevents banks, cement stocks, telecoms, and oil companies from being judged with one generic yardstick.",
+            "NGX Pulse fundamentals for all companies in the same sector",
+            "Sync fundamentals for all active companies, then rerun intelligence and valuation.",
+            "Sector peer coverage depends on how many peers have usable P/E.",
+        ),
+        "usable valuation method": (
+            "High",
+            "A decision card should not claim undervalued or expensive without at least one usable valuation method.",
+            "EPS, P/E, dividend, book value, and sector peer data",
+            "Add EPS/P/E, dividend per share, or book-value support, then rerun valuation.",
+            "No valuation method could produce a fair-value range.",
+        ),
+        "valuation snapshot": (
+            "High",
+            "The fair-value card comes from valuation snapshots, not the frontend.",
+            "EquityKobo valuation engine",
+            "Run POST /valuation/run after intelligence has been generated.",
+            "No valuation snapshot found for this company.",
+        ),
+        "peer comparison": (
+            "Medium",
+            "Peer comparison explains whether this company is better than alternatives in the same sector.",
+            "EquityKobo peer comparison engine",
+            "Run POST /comparison/run after valuation has been generated.",
+            "No peer comparison snapshot found.",
+        ),
+        "sector peer set": (
+            "Medium",
+            "A small peer set can make sector rank unstable and less trustworthy.",
+            "NGX Pulse stocks, fundamentals, and prices for all sector peers",
+            "Sync all active companies and fundamentals, then rerun peer comparison.",
+            "Fewer than five peers have enough data for this sector comparison.",
+        ),
+    }
+    priority, why, source, next_step, coverage = specs.get(
+        name,
+        (
+            "Low",
+            "This data layer would improve explanation quality and confidence.",
+            "NGX Pulse, company filings, or admin-uploaded annual reports",
+            "Add the missing source, then rerun intelligence, valuation, and peer comparison.",
+            "Coverage unknown.",
+        ),
+    )
+    return DecisionCardSourceGapRead(
+        data_layer=name,
+        status="missing_or_thin",
+        priority=priority,
+        why_it_matters=why,
+        current_coverage=coverage,
+        suggested_source=source,
+        next_step=next_step,
     )
 
 

@@ -12,10 +12,10 @@ from ngx_research.services.intelligence_engine import run_intelligence_engine
 from ngx_research.services.ngxpulse_client import (
     NgxPulseError,
     sync_all_stocks,
+    sync_all_dividend_histories,
     sync_bond_auctions,
     sync_bonds,
     sync_disclosures,
-    sync_dividend_history,
     sync_etfs,
     sync_fundamentals,
     sync_indices,
@@ -106,6 +106,25 @@ async def full_market_research_sync(
             _print_sync_result(label, result)
             _add_sync_result(totals, result)
 
+        if include_dividends:
+            symbols = dividend_symbols or _active_company_symbols(session)
+            _report_progress(progress_callback, "dividends", 0, len(symbols))
+            try:
+                result = await sync_all_dividend_histories(
+                    session,
+                    symbols=symbols,
+                    pause_seconds=settings.ngxpulse_request_pause_seconds,
+                    progress_callback=progress_callback,
+                )
+            except NgxPulseError as exc:
+                totals["steps"] += 1
+                totals["errors"] += 1
+                print(f"sync_error:dividends {exc}")
+            else:
+                _print_sync_result("dividends", result)
+                _add_sync_result(totals, result)
+                totals["dividend_symbols"] = len(symbols)
+
         _report_progress(progress_callback, "scan")
         scan = run_market_scan(session)
         totals["scan_run_id"] = scan.scan_run_id
@@ -141,21 +160,6 @@ async def full_market_research_sync(
             f"evaluated={alerts.evaluated_rules} triggered={alerts.triggered}"
         )
 
-        if include_dividends:
-            symbols = dividend_symbols or _active_company_symbols(session)
-            for index, symbol in enumerate(symbols, start=1):
-                _report_progress(progress_callback, f"dividends:{symbol}", index, len(symbols))
-                try:
-                    result = await sync_dividend_history(session, symbol)
-                except NgxPulseError as exc:
-                    totals["errors"] += 1
-                    print(f"sync_error:dividends:{symbol} {exc}")
-                    await asyncio.sleep(settings.ngxpulse_request_pause_seconds)
-                    continue
-                _print_sync_result(f"dividends:{symbol}", result)
-                _add_sync_result(totals, result)
-                totals["dividend_symbols"] += 1
-                await asyncio.sleep(settings.ngxpulse_request_pause_seconds)
     return totals
 
 

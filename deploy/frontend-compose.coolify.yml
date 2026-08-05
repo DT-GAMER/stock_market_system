@@ -1,0 +1,16 @@
+services:
+  equitykobo-web:
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?VITE_API_BASE_URL is required}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

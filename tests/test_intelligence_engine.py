@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from ngx_research.database import Base
 from ngx_research.models import Company, Dividend, NgxPulseFundamental, Price, SourceDocument
+from ngx_research.services.decision_dashboard import decision_opportunity_dashboard
 from ngx_research.services.intelligence_engine import (
     company_memory,
     latest_intelligence_opportunities,
@@ -41,6 +42,57 @@ def test_intelligence_engine_creates_evidence_backed_opportunities():
             assert memory.price_records >= 30
             assert penny.final_label in {"Speculative", "Avoid for Now", "Needs Data"}
             assert "Penny/speculative stock" in penny.stock_types
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_dividend_yield_watch_is_not_reported_as_missing_all_dividend_data():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            source = SourceDocument(
+                name="NGX Pulse API 2026-08-03",
+                document_type="ngxpulse_market_data",
+                url="https://www.ngxpulse.ng/api",
+            )
+            company = Company(symbol="YIELDCO", name="Yield Company Plc", sector="FINANCIAL SERVICES")
+            session.add_all([source, company])
+            session.flush()
+            _prices(session, company.id, source.id, Decimal(40), Decimal("42.5"), 850_000)
+            session.add(
+                NgxPulseFundamental(
+                    company_id=company.id,
+                    as_of_date=date(2026, 8, 3),
+                    pe_ratio=Decimal("7.50"),
+                    eps=Decimal("5.60"),
+                    roe=Decimal("18.00"),
+                    profit_margin=Decimal("22.00"),
+                    debt_equity=Decimal("0.70"),
+                    dividend_yield=Decimal("8.20"),
+                    raw_payload={"symbol": "YIELDCO"},
+                    source_document_id=source.id,
+                )
+            )
+            session.commit()
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            opportunity = latest_intelligence_opportunities(session, limit=10)[0]
+            dashboard = decision_opportunity_dashboard(session)
+
+            assert "Dividend yield watch" in opportunity.stock_types
+            assert "detailed dividend payment history" in opportunity.missing_data
+            assert "No dividend history found in current database." not in opportunity.risks
+            assert any("detailed payment history" in risk for risk in opportunity.risks)
+            assert dashboard.market_summary.dividend_candidates == 1
+            assert dashboard.categories[2].key == "dividend_candidates"
+            assert dashboard.categories[2].items[0].symbol == "YIELDCO"
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

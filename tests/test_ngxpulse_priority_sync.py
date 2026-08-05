@@ -105,6 +105,49 @@ def test_sync_dividend_history_imports_trusted_dividends(monkeypatch, session: S
     assert dividend.amount_per_share == Decimal("8.0300")
 
 
+def test_sync_all_dividend_histories_loops_active_companies(monkeypatch, session: Session):
+    session.add_all(
+        [
+            Company(symbol="GTCO", name="GTCO Plc", sector="FINANCIAL SERVICES"),
+            Company(symbol="ZENITHBANK", name="Zenith Bank Plc", sector="FINANCIAL SERVICES"),
+            Company(symbol="OLDCO", name="Old Company Plc", is_active=False),
+        ]
+    )
+    session.commit()
+
+    requested_paths: list[str] = []
+
+    async def fake_request(path, params=None):
+        requested_paths.append(path)
+        symbol = path.rsplit("/", 1)[-1]
+        return {
+            "dividends": [
+                {
+                    "declared_date": "2026-03-01",
+                    "ex_dividend_date": "2026-03-15",
+                    "payment_date": "2026-04-01",
+                    "amount_per_share": 5 if symbol == "GTCO" else 4,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ngxpulse_client, "_request_json", fake_request)
+
+    async def run_sync():
+        return await ngxpulse_client.sync_all_dividend_histories(session, pause_seconds=0)
+
+    result = anyio.run(run_sync)
+
+    assert requested_paths == [
+        "/api/ngxdata/dividends/GTCO",
+        "/api/ngxdata/dividends/ZENITHBANK",
+    ]
+    assert result.endpoint == "/api/ngxdata/dividends/*"
+    assert result.imported == 2
+    assert result.errors == []
+    assert session.query(Dividend).count() == 2
+
+
 def test_sync_disclosures_and_indices_store_snapshots(monkeypatch, session: Session):
     async def fake_request(path, params=None):
         if path == "/api/ngxdata/disclosures":

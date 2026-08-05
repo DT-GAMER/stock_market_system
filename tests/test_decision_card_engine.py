@@ -1,23 +1,28 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from ngx_research.database import Base
 from ngx_research.models import (
     Company,
+    CompanyIntelligenceSnapshot,
     CompanyPeerComparisonSnapshot,
     CompanyValuationSnapshot,
+    CorporateDisclosure,
     Dividend,
     FinancialStatement,
+    MarketNewsItem,
     NgxPulseFundamental,
     Price,
     SourceDocument,
 )
 from ngx_research.services.decision_card_engine import decision_card
+from ngx_research.services.decision_dashboard import decision_opportunity_dashboard
 from ngx_research.services.intelligence_engine import run_intelligence_engine
+from ngx_research.services.live_insights import company_live_insights
 from ngx_research.services.peer_comparison_engine import (
     company_peer_comparison,
     run_peer_comparison_engine,
@@ -57,10 +62,65 @@ def test_decision_card_explains_company_without_vague_research_label():
             assert card.peer_comparison.sector_rank in {1, 2}
             assert card.peer_comparison.metric_comparisons
             assert "Fair value range" in card.valuation.points[0]
+            assert card.valuation_display.is_available
+            assert card.valuation_display.fair_value_low is not None
+            assert card.valuation_display.methods_used
+            assert card.valuation_display.price_position_percent is not None
+            assert card.health_display
+            assert any(item.label == "Cash flow" and item.status == "Healthy" for item in card.health_display)
+            assert card.dividend_display.is_available
+            assert card.dividend_display.current_yield is not None
+            assert len(card.dividend_display.annual_history) == 3
+            assert card.dividend_display.projected_next_payout is not None
+            assert card.moat_display.label in {"Durable advantage", "Developing advantage"}
+            assert card.moat_display.peer_strength_score is not None
+            assert any(gap.data_layer == "sector peer set" for gap in card.source_gaps)
             assert card.why_buy.points
             assert card.why_not_buy.points
             assert card.what_would_change_decision.points
             assert "No strong positive edge" not in "\n".join(card.why_buy.points)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_decision_card_uses_live_dividends_when_snapshot_metrics_are_stale():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            snapshot = session.scalar(
+                select(CompanyIntelligenceSnapshot)
+                .join(Company)
+                .where(Company.symbol == "ARADEL")
+            )
+            assert snapshot is not None
+            snapshot.metrics = {
+                **(snapshot.metrics or {}),
+                "dividend_years": 0,
+                "dividend_growth": None,
+            }
+            session.commit()
+
+            card = decision_card(session, "ARADEL")
+
+            assert card.dividend_quality != "No dividend evidence yet"
+            assert card.dividend_display.dividend_strength != "No dividend evidence yet"
+            assert card.dividend_display.years_with_dividends == 3
+            assert len(card.dividend_display.annual_history) == 3
+            assert card.dividend.points[1] == "Dividend years currently stored: 3."
+            assert any(
+                item.label == "Dividend safety" and "no dividend evidence" not in item.detail.lower()
+                for item in card.health_checks
+            )
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
@@ -147,6 +207,80 @@ def test_peer_comparison_engine_creates_sector_rank_and_is_rerunnable():
             assert comparison.reasons
             assert comparison.next_actions
             assert all(row.stock_types for row in comparison.peers)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_decision_dashboard_shapes_login_opportunity_desk():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            run_valuation_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            run_peer_comparison_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            dashboard = decision_opportunity_dashboard(session, limit=10)
+
+            assert dashboard.as_of_date == date(2026, 8, 3)
+            assert dashboard.market_summary.companies_scanned == 2
+            assert dashboard.ranked
+            assert dashboard.spotlight_cards
+            assert dashboard.spotlight_cards[0].opportunity is not None
+            assert dashboard.categories
+            assert any(category.key == "top_research" for category in dashboard.categories)
+            aradel = next(item for item in dashboard.ranked if item.symbol == "ARADEL")
+            assert aradel.answer.startswith("YES")
+            assert aradel.confidence in {"Medium", "High", "Very High"}
+            assert aradel.valuation_label is not None
+            assert aradel.peer_rank in {1, 2}
+            assert aradel.why_attention
+            assert aradel.main_risk
+            assert aradel.next_action
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_live_insights_create_price_news_performance_and_risk_cards():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=date(2026, 8, 3), limit=10)
+            insights = company_live_insights(session, "ARADEL")
+
+            assert insights.price.latest_price == Decimal("1526.8000")
+            assert insights.price.price_change_percent is not None
+            assert insights.price.direction == "up"
+            assert insights.performance.windows
+            assert insights.performance.sector_rank_1m in {1, 2}
+            assert {card.key for card in insights.cards} >= {
+                "performance",
+                "news",
+                "risks",
+                "decision_context",
+            }
+            risk_card = next(card for card in insights.cards if card.key == "risks")
+            news_card = next(card for card in insights.cards if card.key == "news")
+            assert any("capital" in point.lower() for point in risk_card.points)
+            assert news_card.source_count >= 2
+            assert insights.recent_news
+            assert insights.recent_disclosures
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
@@ -263,6 +397,29 @@ def _seed_decision_card_data(session: Session) -> None:
                 reviewed=True,
             )
         )
+    session.add_all(
+        [
+            CorporateDisclosure(
+                company_id=company.id,
+                symbol="ARADEL",
+                title="Aradel announces capital raise for expansion programme",
+                disclosure_type="corporate action",
+                published_at=datetime(2026, 8, 2, 10, 0, 0),
+                url="https://example.com/aradel-capital-raise",
+                raw_payload={"symbol": "ARADEL"},
+                source_document_id=source.id,
+            ),
+            MarketNewsItem(
+                title="Aradel gains as investors price in stronger oil and gas earnings",
+                source_name="NGX Pulse",
+                published_at=datetime(2026, 8, 2, 12, 0, 0),
+                url="https://example.com/aradel-news",
+                summary="The company remains watched after its capital raise and expansion plans.",
+                raw_payload={"title": "Aradel gains"},
+                source_document_id=source.id,
+            ),
+        ]
+    )
     session.commit()
 
 

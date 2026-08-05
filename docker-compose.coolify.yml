@@ -1,0 +1,61 @@
+services:
+  equitykobo-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_NAME: ${APP_NAME:-EquityKobo}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      UPLOAD_DIR: /app/data/uploads
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      NGXPULSE_API_KEY: ${NGXPULSE_API_KEY:?NGXPULSE_API_KEY is required}
+      NGXPULSE_BASE_URL: ${NGXPULSE_BASE_URL:-https://www.ngxpulse.ng}
+      AUTOMATION_ENABLED: "false"
+      AUTOMATION_RUN_ON_STARTUP: "false"
+      AUTOMATION_DIVIDEND_SYNC_ENABLED: ${AUTOMATION_DIVIDEND_SYNC_ENABLED:-true}
+      NGXPULSE_REQUEST_PAUSE_SECONDS: ${NGXPULSE_REQUEST_PAUSE_SECONDS:-3.2}
+    volumes:
+      - equitykobo_uploads:/app/data/uploads
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  equitykobo-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["/app/scripts/worker-loop.sh"]
+    environment:
+      APP_NAME: ${APP_NAME:-EquityKobo}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      UPLOAD_DIR: /app/data/uploads
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      NGXPULSE_API_KEY: ${NGXPULSE_API_KEY:?NGXPULSE_API_KEY is required}
+      NGXPULSE_BASE_URL: ${NGXPULSE_BASE_URL:-https://www.ngxpulse.ng}
+      AUTOMATION_ENABLED: "false"
+      AUTOMATION_RUN_ON_STARTUP: "false"
+      AUTOMATION_DIVIDEND_SYNC_ENABLED: ${AUTOMATION_DIVIDEND_SYNC_ENABLED:-true}
+      NGXPULSE_REQUEST_PAUSE_SECONDS: ${NGXPULSE_REQUEST_PAUSE_SECONDS:-3.2}
+      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-86400}
+      SYNC_STARTUP_SLEEP_SECONDS: ${SYNC_STARTUP_SLEEP_SECONDS:-30}
+    volumes:
+      - equitykobo_uploads:/app/data/uploads
+    depends_on:
+      equitykobo-api:
+        condition: service_healthy
+
+volumes:
+  equitykobo_uploads:

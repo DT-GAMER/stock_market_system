@@ -47,11 +47,13 @@ from ngx_research.schemas import (
     AuthTokenRead,
     CompanyCoverageRead,
     CompanyCreate,
+    CompanyLiveInsightsRead,
     CompanyMemoryRead,
     CompanyPeerComparisonRead,
     CompanyRead,
     CompanyValuationRead,
     DecisionCardRead,
+    DecisionDashboardRead,
     DividendCandidateRead,
     DividendHistoryRead,
     DividendImportValidationResult,
@@ -143,6 +145,7 @@ from ngx_research.services.csv_importer import (
     import_prices,
 )
 from ngx_research.services.decision_card_engine import decision_card
+from ngx_research.services.decision_dashboard import decision_opportunity_dashboard
 from ngx_research.services.decision_intelligence import (
     create_investment_goal,
     list_investment_goals,
@@ -172,11 +175,13 @@ from ngx_research.services.investment_rules import (
     list_investment_rules,
     ngx_market_rules,
 )
+from ngx_research.services.live_insights import company_live_insights
 from ngx_research.services.ngxpulse_client import (
     NgxPulseError,
     fetch_market_overview,
     fetch_market_status,
     sync_all_stocks,
+    sync_all_dividend_histories,
     sync_bond_auctions,
     sync_bonds,
     sync_disclosures,
@@ -865,6 +870,30 @@ async def sync_ngxpulse_dividends(symbol: str, session: SessionDep) -> NgxPulseS
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/integrations/ngxpulse/sync/dividends", response_model=NgxPulseSyncResult)
+async def sync_ngxpulse_all_dividends(
+    session: SessionDep,
+    symbols: str | None = None,
+    limit: int | None = None,
+) -> NgxPulseSyncResult:
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    symbol_list = (
+        [symbol.strip().upper() for symbol in symbols.split(",") if symbol.strip()]
+        if symbols
+        else None
+    )
+    try:
+        return await sync_all_dividend_histories(
+            session,
+            symbols=symbol_list,
+            limit=limit,
+            pause_seconds=settings.ngxpulse_request_pause_seconds,
+        )
+    except NgxPulseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/integrations/ngxpulse/sync/disclosures", response_model=NgxPulseSyncResult)
 async def sync_ngxpulse_disclosures(session: SessionDep, limit: int | None = None) -> NgxPulseSyncResult:
     if limit is not None and limit <= 0:
@@ -1425,10 +1454,25 @@ def intelligence_opportunities(session: SessionDep, limit: int = 100) -> list[In
     return latest_intelligence_opportunities(session, limit=limit)
 
 
+@app.get("/decision/opportunities", response_model=DecisionDashboardRead)
+def decision_opportunities(session: SessionDep, limit: int | None = None) -> DecisionDashboardRead:
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return decision_opportunity_dashboard(session, limit=limit)
+
+
 @app.get("/intelligence/company/{symbol}/decision-card", response_model=DecisionCardRead)
 def intelligence_company_decision_card(symbol: str, session: SessionDep) -> DecisionCardRead:
     try:
         return decision_card(session, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/company/{symbol}/live-insights", response_model=CompanyLiveInsightsRead)
+def intelligence_company_live_insights(symbol: str, session: SessionDep) -> CompanyLiveInsightsRead:
+    try:
+        return company_live_insights(session, symbol)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

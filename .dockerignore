@@ -1,0 +1,17 @@
+.git
+.agents
+.codex
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+!.env.example
+data
+*.db
+dist
+node_modules

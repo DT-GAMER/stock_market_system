@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -116,6 +117,54 @@ async def sync_dividend_history(session: Session, symbol: str) -> NgxPulseSyncRe
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
+        imported=imported,
+        updated_companies=updated,
+        skipped=skipped,
+        errors=errors,
+    )
+
+
+async def sync_all_dividend_histories(
+    session: Session,
+    *,
+    symbols: list[str] | None = None,
+    limit: int | None = None,
+    pause_seconds: float = 0,
+    progress_callback=None,
+) -> NgxPulseSyncResult:
+    active_symbols = symbols or list(
+        session.scalars(
+            select(Company.symbol).where(Company.is_active.is_(True)).order_by(Company.symbol)
+        )
+    )
+    if limit is not None:
+        active_symbols = active_symbols[:limit]
+
+    imported = updated = skipped = 0
+    errors: list[str] = []
+    total = len(active_symbols)
+    for index, symbol in enumerate(active_symbols, start=1):
+        normalized = symbol.strip().upper()
+        if not normalized:
+            skipped += 1
+            continue
+        if progress_callback:
+            progress_callback(f"dividends:{normalized}", index, total)
+        try:
+            result = await sync_dividend_history(session, normalized)
+        except NgxPulseError as exc:
+            skipped += 1
+            errors.append(f"{normalized}: {exc}")
+        else:
+            imported += result.imported
+            updated += result.updated_companies
+            skipped += result.skipped
+            errors.extend(f"{normalized}: {error}" for error in result.errors)
+        if pause_seconds > 0 and index < total:
+            await asyncio.sleep(pause_seconds)
+
+    return NgxPulseSyncResult(
+        endpoint="/api/ngxdata/dividends/*",
         imported=imported,
         updated_companies=updated,
         skipped=skipped,

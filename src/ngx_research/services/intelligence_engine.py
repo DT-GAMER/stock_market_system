@@ -551,7 +551,12 @@ def _risks(
     if patterns.pe_ratio is None:
         risks.append("Valuation cannot be confirmed without P/E or EPS support.")
     if patterns.dividend_years == 0:
-        risks.append("No dividend history found in current database.")
+        if patterns.dividend_yield is not None:
+            risks.append(
+                "Dividend yield is available from fundamentals, but detailed payment history is not stored yet."
+            )
+        else:
+            risks.append("No dividend yield or payment history found in current database.")
     if len(missing_data) >= 3:
         risks.append("Several important data layers are still missing.")
     return risks or ["No major rule-based risk flag."]
@@ -566,7 +571,10 @@ def _missing_data(memory: CompanyMemory, patterns: CompanyPatterns) -> list[str]
     if not memory.statements:
         missing.append("annual financial statements")
     if not memory.dividends:
-        missing.append("dividend history")
+        if patterns.dividend_yield is not None:
+            missing.append("detailed dividend payment history")
+        else:
+            missing.append("dividend history")
     if patterns.pe_ratio is None:
         missing.append("P/E ratio")
     if patterns.roe is None:

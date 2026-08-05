@@ -50,6 +50,11 @@ def classify_stock(context: ClassificationContext) -> StockClassification:
     if _is_dividend(context):
         _add(types, "Dividend stock")
         reasons.append("Dividend yield and dividend record support income-focused review.")
+    elif _has_dividend_yield_evidence(context):
+        _add(types, "Dividend yield watch")
+        reasons.append(
+            "Dividend yield is visible in fundamentals, but multi-year payment history still needs confirmation."
+        )
     elif context.dividend_years >= 2:
         _add(types, "Dividend history stock")
         reasons.append("Company has a multi-year dividend record, even if yield is not high today.")
@@ -101,6 +106,10 @@ def _is_dividend(context: ClassificationContext) -> bool:
         and context.dividend_yield >= Decimal(4)
         and context.dividend_years >= 2
     )
+
+
+def _has_dividend_yield_evidence(context: ClassificationContext) -> bool:
+    return context.dividend_yield is not None and context.dividend_yield >= Decimal(4)
 
 
 def _is_blue_chip_candidate(context: ClassificationContext) -> bool:
