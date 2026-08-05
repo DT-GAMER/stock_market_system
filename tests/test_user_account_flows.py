@@ -2,13 +2,17 @@ from collections.abc import Iterator
 from datetime import date
 from decimal import Decimal
 
+import anyio
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from ngx_research.database import Base
 from ngx_research.main import (
+    create_extraction_draft_from_report,
+    create_extraction_draft_from_text,
     create_my_journal_entry,
     create_my_portfolio_transaction,
     delete_report,
@@ -33,6 +37,7 @@ from ngx_research.models import (
 from ngx_research.schemas import (
     PortfolioTransactionCreate,
     UserJournalEntryCreate,
+    ExtractionDraftCreate,
     UserPortfolioPlanItemUpsert,
     UserPortfolioPlanUpsert,
     UserProfileUpsert,
@@ -228,6 +233,173 @@ def test_delete_report_removes_related_extraction_records(session: Session, tmp_
     assert session.query(ReportTextExtraction).count() == 0
     assert session.query(ExtractionDraft).count() == 0
     assert not stored_file.exists()
+
+
+def test_report_draft_endpoint_reuses_linked_manual_draft(monkeypatch, session: Session, tmp_path) -> None:
+    company = seed_company(session, "SEPLAT", "Seplat Energy Plc")
+    source = SourceDocument(name="SEPLAT 2017 Annual Report", document_type="financial_report")
+    session.add(source)
+    session.flush()
+    report = UploadedReport(
+        source_document_id=source.id,
+        company_id=company.id,
+        original_filename="seplat-2017.pdf",
+        stored_path=str(tmp_path / "seplat-2017.pdf"),
+        content_type="application/pdf",
+        file_size=3,
+        sha256="b" * 64,
+        status="uploaded",
+    )
+    session.add(report)
+    session.commit()
+
+    async def fake_extract_financial_statement(report_text: str):
+        assert "Consolidated statement" in report_text
+        return (
+            "{}",
+            {
+                "symbol": "SEPLAT",
+                "period_end": "2017-12-31",
+                "period_type": "FY",
+                "currency": "NGN",
+                "scale": "millions",
+                "revenue": 138281,
+                "profit_after_tax": 81111,
+                "total_assets": 799553,
+                "total_liabilities": 339907,
+                "total_equity": 459646,
+                "cash_flow_operations": 118414,
+                "eps": 143.96,
+                "confidence": 100,
+                "warnings": [],
+                "summary": "Manual statement extraction.",
+            },
+        )
+
+    monkeypatch.setattr(
+        "ngx_research.main.extract_financial_statement",
+        fake_extract_financial_statement,
+    )
+
+    manual_draft = anyio.run(
+        create_extraction_draft_from_text,
+        ExtractionDraftCreate(
+            symbol="SEPLAT",
+            source_document_id=source.id,
+            uploaded_report_id=report.id,
+            report_text="Consolidated statement of profit or loss\nRevenue 138,281",
+            notes="Manual financial text pasted from annual report.",
+        ),
+        session,
+    )
+    reused_draft = anyio.run(create_extraction_draft_from_report, report.id, session)
+
+    assert reused_draft.id == manual_draft.id
+    assert reused_draft.parsed_data["revenue"] == 138281
+    assert session.get(UploadedReport, report.id).status == "manual_draft_created"
+
+
+def test_manual_draft_without_pdf_creates_manual_source(monkeypatch, session: Session) -> None:
+    seed_company(session, "GTCO", "Guaranty Trust Holding Company Plc")
+
+    async def fake_extract_financial_statement(report_text: str):
+        assert "Gross earnings" in report_text
+        return (
+            "{}",
+            {
+                "symbol": "GTCO",
+                "period_end": "2025-12-31",
+                "period_type": "FY",
+                "currency": "NGN",
+                "scale": "millions",
+                "revenue": 2500000,
+                "profit_after_tax": 700000,
+                "confidence": 90,
+                "warnings": [],
+                "summary": "Standalone manual statement extraction.",
+            },
+        )
+
+    monkeypatch.setattr(
+        "ngx_research.main.extract_financial_statement",
+        fake_extract_financial_statement,
+    )
+
+    draft = anyio.run(
+        create_extraction_draft_from_text,
+        ExtractionDraftCreate(
+            symbol="GTCO",
+            source_name="GTCO annual report",
+            report_year=2025,
+            report_text="Gross earnings 2,500,000\nProfit after tax 700,000",
+            notes="Copied from official annual report PDF.",
+        ),
+        session,
+    )
+    source = session.get(SourceDocument, draft.source_document_id)
+
+    assert draft.uploaded_report_id is None
+    assert source is not None
+    assert source.name == "GTCO annual report 2025"
+    assert source.document_type == "manual_financial_text"
+    assert "Financial year: 2025" in source.notes
+
+
+def test_manual_draft_without_pdf_requires_source_name_and_year(session: Session) -> None:
+    seed_company(session, "GTCO", "Guaranty Trust Holding Company Plc")
+
+    with pytest.raises(HTTPException) as missing_name:
+        anyio.run(
+            create_extraction_draft_from_text,
+            ExtractionDraftCreate(
+                symbol="GTCO",
+                report_year=2025,
+                report_text="Gross earnings 2,500,000",
+            ),
+            session,
+        )
+
+    with pytest.raises(HTTPException) as missing_year:
+        anyio.run(
+            create_extraction_draft_from_text,
+            ExtractionDraftCreate(
+                symbol="GTCO",
+                source_name="GTCO annual report",
+                report_text="Gross earnings 2,500,000",
+            ),
+            session,
+        )
+
+    assert missing_name.value.status_code == 400
+    assert "source_name is required" in missing_name.value.detail
+    assert missing_year.value.status_code == 400
+    assert "report_year is required" in missing_year.value.detail
+
+
+def test_report_draft_endpoint_explains_missing_report_text(session: Session, tmp_path) -> None:
+    company = seed_company(session, "GTCO", "Guaranty Trust Holding Company Plc")
+    source = SourceDocument(name="GTCO Annual Report", document_type="financial_report")
+    session.add(source)
+    session.flush()
+    report = UploadedReport(
+        source_document_id=source.id,
+        company_id=company.id,
+        original_filename="gtco.pdf",
+        stored_path=str(tmp_path / "gtco.pdf"),
+        content_type="application/pdf",
+        file_size=3,
+        sha256="c" * 64,
+        status="uploaded",
+    )
+    session.add(report)
+    session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(create_extraction_draft_from_report, report.id, session)
+
+    assert exc_info.value.status_code == 400
+    assert "Extract PDF text first" in exc_info.value.detail
+    assert "Manual financial text" in exc_info.value.detail
 
 
 def create_test_user(session: Session, email: str) -> UserRead:

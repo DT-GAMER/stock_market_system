@@ -1157,14 +1157,26 @@ async def create_extraction_draft_from_text(
 ) -> ExtractionDraft:
     company = _company_by_symbol(session, payload.symbol) if payload.symbol else None
     _ensure_source_refs(session, payload.source_document_id, payload.uploaded_report_id)
+    source_document_id = payload.source_document_id
+    if payload.uploaded_report_id and source_document_id is None:
+        linked_report = session.get(UploadedReport, payload.uploaded_report_id)
+        source_document_id = linked_report.source_document_id if linked_report else None
+    if source_document_id is None:
+        source_document_id = _create_manual_text_source(session, payload, company)
     draft = await _create_extraction_draft(
         session=session,
         report_text=payload.report_text,
         company_id=company.id if company else None,
-        source_document_id=payload.source_document_id,
+        source_document_id=source_document_id,
         uploaded_report_id=payload.uploaded_report_id,
         notes=payload.notes,
     )
+    if payload.uploaded_report_id:
+        report = session.get(UploadedReport, payload.uploaded_report_id)
+        if report:
+            report.status = "manual_draft_created"
+            session.commit()
+            session.refresh(draft)
     return draft
 
 
@@ -1174,9 +1186,25 @@ async def create_extraction_draft_from_report(report_id: int, session: SessionDe
     if not report:
         raise HTTPException(status_code=404, detail="uploaded report not found")
 
-    extraction = _latest_report_text(session, report.id)
+    extraction = _latest_report_text_optional(session, report.id)
+    if not extraction:
+        existing_draft = _latest_report_draft(session, report.id)
+        if existing_draft:
+            if report.status != "manual_draft_created":
+                report.status = "manual_draft_created"
+                session.commit()
+                session.refresh(existing_draft)
+            return existing_draft
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No report text is available for DeepSeek yet. Extract PDF text first, "
+                "or paste the financial statement pages in Manual financial text and link "
+                "them to this report."
+            ),
+        )
 
-    return await _create_extraction_draft(
+    draft = await _create_extraction_draft(
         session=session,
         report_text=extraction.text,
         company_id=report.company_id,
@@ -1184,6 +1212,10 @@ async def create_extraction_draft_from_report(report_id: int, session: SessionDe
         uploaded_report_id=report.id,
         notes=f"Generated from report text extraction {extraction.id}.",
     )
+    report.status = "draft_created"
+    session.commit()
+    session.refresh(draft)
+    return draft
 
 
 @app.get("/llm/extraction-drafts", response_model=list[ExtractionDraftRead])
@@ -1943,6 +1975,47 @@ def _ensure_source_refs(
         raise HTTPException(status_code=404, detail="uploaded report not found")
 
 
+def _create_manual_text_source(
+    session: Session,
+    payload: ExtractionDraftCreate,
+    company: Company | None,
+) -> int:
+    source_name = (payload.source_name or "").strip()
+    if not source_name:
+        raise HTTPException(
+            status_code=400,
+            detail="source_name is required when manual text is not linked to an uploaded report",
+        )
+    if payload.report_year is None:
+        raise HTTPException(
+            status_code=400,
+            detail="report_year is required when manual text is not linked to an uploaded report",
+        )
+    current_year = datetime.now(UTC).year
+    if payload.report_year < 1990 or payload.report_year > current_year + 1:
+        raise HTTPException(status_code=400, detail="report_year is outside the supported range")
+
+    company_label = company.symbol if company else (payload.symbol or "Unknown company")
+    name = source_name if str(payload.report_year) in source_name else f"{source_name} {payload.report_year}"
+    notes = "\n".join(
+        item
+        for item in [
+            f"Manual financial text source for {company_label}.",
+            f"Financial year: {payload.report_year}.",
+            payload.notes,
+        ]
+        if item
+    )
+    source = SourceDocument(
+        name=name,
+        document_type="manual_financial_text",
+        notes=notes,
+    )
+    session.add(source)
+    session.flush()
+    return source.id
+
+
 async def _create_extraction_draft(
     session: Session,
     report_text: str,
@@ -1985,18 +2058,31 @@ async def _create_extraction_draft(
 
 
 def _latest_report_text(session: Session, report_id: int) -> ReportTextExtraction:
-    extraction = session.scalar(
-        select(ReportTextExtraction)
-        .where(ReportTextExtraction.uploaded_report_id == report_id)
-        .order_by(desc(ReportTextExtraction.created_at))
-        .limit(1)
-    )
+    extraction = _latest_report_text_optional(session, report_id)
     if not extraction:
         raise HTTPException(
             status_code=404,
             detail="report text has not been extracted yet; call /reports/{report_id}/extract-text first",
         )
     return extraction
+
+
+def _latest_report_text_optional(session: Session, report_id: int) -> ReportTextExtraction | None:
+    return session.scalar(
+        select(ReportTextExtraction)
+        .where(ReportTextExtraction.uploaded_report_id == report_id)
+        .order_by(desc(ReportTextExtraction.created_at))
+        .limit(1)
+    )
+
+
+def _latest_report_draft(session: Session, report_id: int) -> ExtractionDraft | None:
+    return session.scalar(
+        select(ExtractionDraft)
+        .where(ExtractionDraft.uploaded_report_id == report_id)
+        .order_by(desc(ExtractionDraft.created_at), desc(ExtractionDraft.id))
+        .limit(1)
+    )
 
 
 def _delete_uploaded_file(stored_path: str) -> None:

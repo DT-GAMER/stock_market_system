@@ -199,6 +199,8 @@ class ExtractionDraftCreate(BaseModel):
     symbol: str | None = None
     source_document_id: int | None = None
     uploaded_report_id: int | None = None
+    source_name: str | None = None
+    report_year: int | None = None
     report_text: str
     notes: str | None = None
 
