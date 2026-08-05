@@ -88,7 +88,7 @@ async def sync_fundamentals(
             was_created = _upsert_fundamental(session, row, source, as_of_date)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse fundamental row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -116,7 +116,7 @@ async def sync_dividend_history(session: Session, symbol: str) -> NgxPulseSyncRe
             was_created = _upsert_dividend(session, company, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse dividend row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -159,6 +159,17 @@ async def sync_all_dividend_histories(
         try:
             result = await sync_dividend_history(session, normalized)
         except NgxPulseError as exc:
+            if _is_rate_limit_error(exc):
+                remaining = total - index + 1
+                skipped += remaining
+                message = (
+                    f"{normalized}: NGX Pulse rate limit exceeded; stopped dividend sync "
+                    f"after {index - 1}/{total} symbols. Remaining symbols will be retried "
+                    "on the next run."
+                )
+                logger.warning(message)
+                errors.append(message)
+                break
             skipped += 1
             logger.warning("Could not sync NGX Pulse dividends for %s", normalized, exc_info=True)
             errors.append(f"{normalized}: {provider_row_error_message(exc)}")
@@ -179,6 +190,10 @@ async def sync_all_dividend_histories(
     )
 
 
+def _is_rate_limit_error(exc: NgxPulseError) -> bool:
+    return "rate limit" in str(exc).lower()
+
+
 async def sync_disclosures(session: Session, limit: int | None = None) -> NgxPulseSyncResult:
     endpoint = "/api/ngxdata/disclosures"
     payload = await _request_json(endpoint)
@@ -193,7 +208,7 @@ async def sync_disclosures(session: Session, limit: int | None = None) -> NgxPul
             was_created = _upsert_disclosure(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse disclosure row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -213,7 +228,7 @@ async def sync_indices(session: Session) -> NgxPulseSyncResult:
             was_created = _upsert_index(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse index row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -233,7 +248,7 @@ async def sync_etfs(session: Session) -> NgxPulseSyncResult:
             was_created = _upsert_etf(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse ETF row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -259,7 +274,7 @@ async def sync_bonds(session: Session) -> NgxPulseSyncResult:
             was_created = _upsert_bond(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse bond row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -292,7 +307,7 @@ async def sync_bond_auctions(session: Session, limit: int | None = None) -> NgxP
             was_created = _upsert_bond_auction(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse bond auction row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -326,7 +341,7 @@ async def sync_nasd_otc_stocks(session: Session) -> NgxPulseSyncResult:
             was_created = _upsert_nasd_otc_stock(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NASD OTC row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -353,7 +368,7 @@ async def sync_market_news(session: Session, limit: int | None = None) -> NgxPul
             was_created = _upsert_market_news(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import market news row", exc_info=True)
             errors.append(provider_row_error_message(exc))
@@ -488,7 +503,7 @@ def _sync_stock_rows(
                     },
                 }
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped += 1
             logger.warning("Could not import NGX Pulse stock price row", exc_info=True)
             errors.append(provider_row_error_message(exc))

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
-
 TECHNICAL_ERROR_MARKERS = (
     "psycopg.",
     "sqlalchemy.",

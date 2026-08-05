@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     automation_enabled: bool = True
     automation_run_on_startup: bool = True
     automation_interval_minutes: int = 1440
+    automation_scheduled_sync_mode: str = "daily"
     automation_dividend_sync_enabled: bool = True
+    automation_daily_dividend_sync_enabled: bool = False
     ngxpulse_request_pause_seconds: float = 3.2
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

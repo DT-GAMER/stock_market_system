@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import anyio
@@ -7,7 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ngx_research.config import settings
 from ngx_research.database import Base
+from ngx_research.jobs import _dividend_symbols_due
 from ngx_research.models import (
     BondAuctionSnapshot,
     BondSnapshot,
@@ -20,6 +23,7 @@ from ngx_research.models import (
     MarketNewsItem,
     NasdOtcStockSnapshot,
     NgxPulseFundamental,
+    SourceDocument,
 )
 from ngx_research.services import ngxpulse_client
 
@@ -146,6 +150,71 @@ def test_sync_all_dividend_histories_loops_active_companies(monkeypatch, session
     assert result.imported == 2
     assert result.errors == []
     assert session.query(Dividend).count() == 2
+
+
+def test_sync_all_dividend_histories_stops_on_rate_limit(monkeypatch, session: Session):
+    session.add_all(
+        [
+            Company(symbol="AAA", name="A Plc"),
+            Company(symbol="BBB", name="B Plc"),
+            Company(symbol="CCC", name="C Plc"),
+        ]
+    )
+    session.commit()
+
+    requested_paths: list[str] = []
+
+    async def fake_request(path, params=None):
+        requested_paths.append(path)
+        if path.endswith("/BBB"):
+            raise ngxpulse_client.NgxPulseError("NGX Pulse rate limit exceeded")
+        return {
+            "dividends": [
+                {
+                    "declared_date": "2026-03-01",
+                    "payment_date": "2026-04-01",
+                    "amount_per_share": 1,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ngxpulse_client, "_request_json", fake_request)
+
+    async def run_sync():
+        return await ngxpulse_client.sync_all_dividend_histories(session, pause_seconds=0)
+
+    result = anyio.run(run_sync)
+
+    assert requested_paths == [
+        "/api/ngxdata/dividends/AAA",
+        "/api/ngxdata/dividends/BBB",
+    ]
+    assert result.imported == 1
+    assert result.skipped == 2
+    assert len(result.errors) == 1
+    assert "stopped dividend sync" in result.errors[0]
+    assert session.query(Dividend).count() == 1
+
+
+def test_dividend_symbols_due_skips_symbols_synced_today(session: Session):
+    session.add_all(
+        [
+            Company(symbol="AAA", name="A Plc"),
+            Company(symbol="BBB", name="B Plc"),
+            Company(symbol="OLDCO", name="Old Company Plc", is_active=False),
+        ]
+    )
+    today = datetime.now(UTC).date().isoformat()
+    session.add(
+        SourceDocument(
+            name=f"NGX Pulse API {today}",
+            document_type="ngxpulse_market_data",
+            url=f"{settings.ngxpulse_base_url.rstrip('/')}/api/ngxdata/dividends/AAA",
+        )
+    )
+    session.commit()
+
+    assert _dividend_symbols_due(session) == ["BBB"]
 
 
 def test_sync_disclosures_and_indices_store_snapshots(monkeypatch, session: Session):

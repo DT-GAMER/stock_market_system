@@ -181,8 +181,8 @@ from ngx_research.services.ngxpulse_client import (
     NgxPulseError,
     fetch_market_overview,
     fetch_market_status,
-    sync_all_stocks,
     sync_all_dividend_histories,
+    sync_all_stocks,
     sync_bond_auctions,
     sync_bonds,
     sync_disclosures,
@@ -299,8 +299,8 @@ def get_automation_status() -> dict:
 
 
 @app.post("/automation/run-now")
-async def run_automation_now() -> dict:
-    return await run_automation_once()
+async def run_automation_now(mode: str = "full") -> dict:
+    return await run_automation_once(mode=mode)
 
 
 def _current_user(session: SessionDep, authorization: AuthorizationHeader = None) -> UserRead:

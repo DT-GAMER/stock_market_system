@@ -14,6 +14,8 @@ _state: dict[str, Any] = {
     "enabled": False,
     "is_running": False,
     "runs": 0,
+    "current_mode": None,
+    "last_mode": None,
     "last_started_at": None,
     "last_finished_at": None,
     "last_error": None,
@@ -40,22 +42,28 @@ def start_automation_scheduler() -> None:
     _scheduler_task = asyncio.create_task(_automation_loop())
 
 
-async def run_automation_once() -> dict[str, Any]:
+async def run_automation_once(mode: str = "full") -> dict[str, Any]:
+    sync_mode = _automation_sync_mode(mode)
     if _run_lock.locked():
-        return {"status": "already_running", **automation_status()}
+        return {"status": "already_running", "requested_mode": sync_mode, **automation_status()}
     async with _run_lock:
         _state["is_running"] = True
+        _state["current_mode"] = sync_mode
+        _state["last_mode"] = sync_mode
         _state["last_started_at"] = datetime.now(UTC).isoformat()
         _state["last_error"] = None
         _state["current_step"] = "starting"
         _state["current_index"] = None
         _state["current_total"] = None
         try:
-            result = await full_market_research_sync(progress_callback=_set_progress)
+            result = await full_market_research_sync(
+                sync_mode=sync_mode,
+                progress_callback=_set_progress,
+            )
             _state["runs"] += 1
             _state["last_result"] = result
-            return {"status": "completed", "result": result}
-        except Exception as exc:  # noqa: BLE001
+            return {"status": "completed", "mode": sync_mode, "result": result}
+        except Exception as exc:
             safe_message = public_error_message(exc, action="run automatic market intelligence")
             _state["last_error"] = safe_message
             logger.exception("Automation run failed")
@@ -63,6 +71,7 @@ async def run_automation_once() -> dict[str, Any]:
         finally:
             _state["is_running"] = False
             _state["last_finished_at"] = datetime.now(UTC).isoformat()
+            _state["current_mode"] = None
             _state["current_step"] = None
             _state["current_index"] = None
             _state["current_total"] = None
@@ -73,7 +82,10 @@ def automation_status() -> dict[str, Any]:
         **_state,
         "interval_minutes": settings.automation_interval_minutes,
         "run_on_startup": settings.automation_run_on_startup,
+        "scheduled_sync_mode": _automation_sync_mode(settings.automation_scheduled_sync_mode),
+        "manual_sync_mode": "full",
         "dividend_sync_enabled": settings.automation_dividend_sync_enabled,
+        "daily_dividend_sync_enabled": settings.automation_daily_dividend_sync_enabled,
     }
 
 
@@ -88,9 +100,14 @@ async def _automation_loop() -> None:
     while True:
         _state["next_run_after_seconds"] = wait_seconds
         await asyncio.sleep(wait_seconds)
-        await run_automation_once()
+        await run_automation_once(mode=settings.automation_scheduled_sync_mode)
         wait_seconds = _interval_seconds()
 
 
 def _interval_seconds() -> int:
     return max(60, settings.automation_interval_minutes * 60)
+
+
+def _automation_sync_mode(mode: str | None) -> str:
+    normalized = (mode or "daily").strip().lower()
+    return normalized if normalized in {"daily", "full"} else "daily"
