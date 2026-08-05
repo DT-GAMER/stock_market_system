@@ -1,13 +1,14 @@
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import desc, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ngx_research.config import settings
@@ -206,6 +207,7 @@ from ngx_research.services.price_workflow import (
     price_history,
     validate_price_csv,
 )
+from ngx_research.services.public_errors import public_error_code, public_error_message
 from ngx_research.services.report_storage import save_upload
 from ngx_research.services.research_digest import build_research_digest
 from ngx_research.services.scanner import run_market_scan
@@ -223,6 +225,7 @@ from ngx_research.services.watchlists import (
     watchlist_detail,
 )
 
+logger = logging.getLogger(__name__)
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
     CORSMiddleware,
@@ -231,6 +234,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(IntegrityError)
+async def database_conflict_handler(request: Request, exc: IntegrityError) -> JSONResponse:
+    logger.exception("Database conflict on %s", request.url.path)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": public_error_message(exc),
+            "code": public_error_code(exc),
+        },
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.exception("Database error on %s", request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": public_error_message(exc),
+            "code": public_error_code(exc),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled API error on %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": public_error_message(exc),
+            "code": public_error_code(exc),
+        },
+    )
 
 
 @app.on_event("startup")

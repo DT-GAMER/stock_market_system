@@ -1,12 +1,15 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from ngx_research.config import settings
 from ngx_research.jobs import full_market_research_sync
+from ngx_research.services.public_errors import public_error_code, public_error_message
 
 _scheduler_task: asyncio.Task | None = None
 _run_lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
 _state: dict[str, Any] = {
     "enabled": False,
     "is_running": False,
@@ -53,8 +56,10 @@ async def run_automation_once() -> dict[str, Any]:
             _state["last_result"] = result
             return {"status": "completed", "result": result}
         except Exception as exc:  # noqa: BLE001
-            _state["last_error"] = str(exc)
-            return {"status": "failed", "error": str(exc)}
+            safe_message = public_error_message(exc, action="run automatic market intelligence")
+            _state["last_error"] = safe_message
+            logger.exception("Automation run failed")
+            return {"status": "failed", "error": safe_message, "error_code": public_error_code(exc)}
         finally:
             _state["is_running"] = False
             _state["last_finished_at"] = datetime.now(UTC).isoformat()

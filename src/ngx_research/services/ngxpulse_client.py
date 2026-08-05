@@ -1,10 +1,12 @@
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ngx_research.config import settings
@@ -25,9 +27,11 @@ from ngx_research.models import (
     SourceDocument,
 )
 from ngx_research.schemas import NgxPulseSyncResult
+from ngx_research.services.public_errors import provider_row_error_message, public_error_message
 from ngx_research.services.source_trust import is_trusted_document_type
 
 NGXPULSE_DOCUMENT_TYPE = "ngxpulse_market_data"
+logger = logging.getLogger(__name__)
 
 
 class NgxPulseError(Exception):
@@ -86,7 +90,8 @@ async def sync_fundamentals(
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse fundamental row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -113,7 +118,8 @@ async def sync_dividend_history(session: Session, symbol: str) -> NgxPulseSyncRe
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse dividend row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -154,7 +160,8 @@ async def sync_all_dividend_histories(
             result = await sync_dividend_history(session, normalized)
         except NgxPulseError as exc:
             skipped += 1
-            errors.append(f"{normalized}: {exc}")
+            logger.warning("Could not sync NGX Pulse dividends for %s", normalized, exc_info=True)
+            errors.append(f"{normalized}: {provider_row_error_message(exc)}")
         else:
             imported += result.imported
             updated += result.updated_companies
@@ -188,7 +195,8 @@ async def sync_disclosures(session: Session, limit: int | None = None) -> NgxPul
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse disclosure row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(endpoint=endpoint, imported=imported, updated_companies=updated, skipped=skipped, errors=errors)
 
@@ -207,7 +215,8 @@ async def sync_indices(session: Session) -> NgxPulseSyncResult:
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse index row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(endpoint=endpoint, imported=imported, updated_companies=updated, skipped=skipped, errors=errors)
 
@@ -226,7 +235,8 @@ async def sync_etfs(session: Session) -> NgxPulseSyncResult:
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse ETF row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -251,7 +261,8 @@ async def sync_bonds(session: Session) -> NgxPulseSyncResult:
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse bond row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -270,15 +281,30 @@ async def sync_bond_auctions(session: Session, limit: int | None = None) -> NgxP
     source = _get_or_create_source(session, endpoint, datetime.now(UTC).date())
     imported = updated = skipped = 0
     errors: list[str] = []
+    seen_keys: set[tuple[date, str, str | None]] = set()
     for row in rows:
         try:
+            key = _bond_auction_key(row)
+            if key in seen_keys:
+                skipped += 1
+                continue
+            seen_keys.add(key)
             was_created = _upsert_bond_auction(session, row, source)
             imported += int(was_created)
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
-    session.commit()
+            logger.warning("Could not import NGX Pulse bond auction row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        imported = 0
+        updated = 0
+        skipped = len(rows)
+        logger.exception("Could not commit NGX Pulse bond auction sync")
+        errors.append(public_error_message(exc, action="save bond auction data"))
     return NgxPulseSyncResult(
         endpoint=endpoint,
         imported=imported,
@@ -302,7 +328,8 @@ async def sync_nasd_otc_stocks(session: Session) -> NgxPulseSyncResult:
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NASD OTC row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -328,7 +355,8 @@ async def sync_market_news(session: Session, limit: int | None = None) -> NgxPul
             updated += int(not was_created)
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import market news row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
     session.commit()
     return NgxPulseSyncResult(
         endpoint=endpoint,
@@ -462,7 +490,8 @@ def _sync_stock_rows(
             )
         except Exception as exc:  # noqa: BLE001
             skipped += 1
-            errors.append(str(exc))
+            logger.warning("Could not import NGX Pulse stock price row", exc_info=True)
+            errors.append(provider_row_error_message(exc))
 
     if not parsed_rows:
         return NgxPulseSyncResult(
@@ -766,12 +795,17 @@ def _upsert_bond(session: Session, row: dict[str, Any], source: SourceDocument) 
     return True
 
 
-def _upsert_bond_auction(session: Session, row: dict[str, Any], source: SourceDocument) -> bool:
+def _bond_auction_key(row: dict[str, Any]) -> tuple[date, str, str | None]:
     auction_date = _optional_date(row.get("auction_date") or row.get("date"))
     if not auction_date:
         raise ValueError("bond auction row missing auction date")
-    instrument_type = str(row.get("instrument_type") or row.get("type") or "unknown")
+    instrument_type = str(row.get("instrument_type") or row.get("type") or "unknown").strip().lower()
     tenor_label = str(row["tenor_label"]) if row.get("tenor_label") else None
+    return auction_date, instrument_type, tenor_label
+
+
+def _upsert_bond_auction(session: Session, row: dict[str, Any], source: SourceDocument) -> bool:
+    auction_date, instrument_type, tenor_label = _bond_auction_key(row)
     values = {
         "tenor_days": _int_field(row, "tenor_days"),
         "stop_rate": _decimal_field(row, "stop_rate", "yield", "rate"),

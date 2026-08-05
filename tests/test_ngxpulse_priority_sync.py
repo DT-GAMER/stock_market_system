@@ -288,3 +288,46 @@ def test_sync_priority_two_market_context_feeds(monkeypatch, session: Session):
     assert session.query(BondAuctionSnapshot).one().tenor_label == "364-day"
     assert session.query(NasdOtcStockSnapshot).one().symbol == "SDCSCSPLC"
     assert session.query(MarketNewsItem).one().source_name == "Nairametrics"
+
+
+def test_sync_bond_auctions_deduplicates_provider_rows(monkeypatch, session: Session):
+    async def fake_request(path, params=None):
+        assert path == "/api/ngxdata/bonds/auctions"
+        assert params == {"limit": 50}
+        return {
+            "data": [
+                {
+                    "instrument_type": "cp",
+                    "tenor_days": 113,
+                    "tenor_label": "113-day",
+                    "auction_date": "2026-03-23",
+                    "stop_rate": 21.57,
+                    "offered_amount": 200000,
+                    "allotted_amount": 664400,
+                    "subscription_rate": 337.2,
+                    "currency": "NGN",
+                },
+                {
+                    "instrument_type": "CP",
+                    "tenor_days": 113,
+                    "tenor_label": "113-day",
+                    "auction_date": "2026-03-23",
+                    "stop_rate": 21.57,
+                    "offered_amount": 200000,
+                    "allotted_amount": 664400,
+                    "subscription_rate": 337.2,
+                    "currency": "NGN",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(ngxpulse_client, "_request_json", fake_request)
+
+    result = anyio.run(ngxpulse_client.sync_bond_auctions, session, 50)
+
+    assert result.imported == 1
+    assert result.skipped == 1
+    assert result.errors == []
+    auction = session.query(BondAuctionSnapshot).one()
+    assert auction.auction_date.isoformat() == "2026-03-23"
+    assert auction.instrument_type == "cp"

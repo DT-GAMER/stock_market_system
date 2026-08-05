@@ -24,6 +24,7 @@ from ngx_research.services.ngxpulse_client import (
     sync_symbol_prices,
 )
 from ngx_research.services.peer_comparison_engine import run_peer_comparison_engine
+from ngx_research.services.public_errors import public_error_message
 from ngx_research.services.scanner import run_market_scan
 from ngx_research.services.valuation_engine import run_valuation_engine
 
@@ -101,7 +102,13 @@ async def full_market_research_sync(
             except NgxPulseError as exc:
                 totals["steps"] += 1
                 totals["errors"] += 1
-                print(f"sync_error:{label} {exc}")
+                print(f"sync_error:{label} {public_error_message(exc, action=f'sync {label}')}")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                totals["steps"] += 1
+                totals["errors"] += 1
+                print(f"sync_error:{label} {public_error_message(exc, action=f'sync {label}')}")
                 continue
             _print_sync_result(label, result)
             _add_sync_result(totals, result)
@@ -119,7 +126,12 @@ async def full_market_research_sync(
             except NgxPulseError as exc:
                 totals["steps"] += 1
                 totals["errors"] += 1
-                print(f"sync_error:dividends {exc}")
+                print(f"sync_error:dividends {public_error_message(exc, action='sync dividends')}")
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                totals["steps"] += 1
+                totals["errors"] += 1
+                print(f"sync_error:dividends {public_error_message(exc, action='sync dividends')}")
             else:
                 _print_sync_result("dividends", result)
                 _add_sync_result(totals, result)
