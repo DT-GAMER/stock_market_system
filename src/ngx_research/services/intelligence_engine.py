@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 from statistics import median
+from threading import Lock
 
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 from ngx_research.models import (
     Company,
     CompanyIntelligenceSnapshot,
+    CompanyPeerComparisonSnapshot,
+    CompanyValuationSnapshot,
     CorporateDisclosure,
     Dividend,
     FinancialStatement,
@@ -26,6 +29,7 @@ from ngx_research.schemas import (
 from ngx_research.services.stock_classifier import ClassificationContext, classify_stock
 
 HUNDRED = Decimal(100)
+_INTELLIGENCE_RUN_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,15 @@ def run_intelligence_engine(
     as_of_date: date | None = None,
     limit: int | None = None,
 ) -> IntelligenceRunRead:
+    with _INTELLIGENCE_RUN_LOCK:
+        return _run_intelligence_engine_locked(session=session, as_of_date=as_of_date, limit=limit)
+
+
+def _run_intelligence_engine_locked(
+    session: Session,
+    as_of_date: date | None = None,
+    limit: int | None = None,
+) -> IntelligenceRunRead:
     snapshot_date = as_of_date or datetime.now(UTC).date()
     memories = _company_memories(session, snapshot_date)
     patterns_by_company = {
@@ -85,11 +98,13 @@ def run_intelligence_engine(
     }
     sector_stats = _sector_stats(memories, patterns_by_company)
 
+    _clear_dependent_snapshots(session, snapshot_date)
     session.execute(
         delete(CompanyIntelligenceSnapshot).where(
             CompanyIntelligenceSnapshot.as_of_date == snapshot_date
-        )
+        ).execution_options(synchronize_session=False)
     )
+    session.flush()
     generated: list[CompanyIntelligenceSnapshot] = []
     for memory in memories:
         snapshot = _build_snapshot(
@@ -108,6 +123,20 @@ def run_intelligence_engine(
         generated=len(generated),
         opportunities=opportunities,
     )
+
+
+def _clear_dependent_snapshots(session: Session, snapshot_date: date) -> None:
+    session.execute(
+        delete(CompanyPeerComparisonSnapshot)
+        .where(CompanyPeerComparisonSnapshot.as_of_date == snapshot_date)
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        delete(CompanyValuationSnapshot)
+        .where(CompanyValuationSnapshot.as_of_date == snapshot_date)
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
 
 
 def latest_intelligence_opportunities(

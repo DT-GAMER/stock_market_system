@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,6 +28,21 @@ from ngx_research.services.peer_comparison_engine import (
     run_peer_comparison_engine,
 )
 from ngx_research.services.valuation_engine import company_valuation, run_valuation_engine
+
+
+def _sqlite_engine(*, enforce_foreign_keys: bool = False):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    if enforce_foreign_keys:
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+    return engine
 
 
 def test_decision_card_explains_company_without_vague_research_label():
@@ -79,6 +94,60 @@ def test_decision_card_explains_company_without_vague_research_label():
             assert card.why_not_buy.points
             assert card.what_would_change_decision.points
             assert "No strong positive edge" not in "\n".join(card.why_buy.points)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_intelligence_engine_rerun_clears_valuation_and_peer_children_first():
+    engine = _sqlite_engine(enforce_foreign_keys=True)
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            run_date = date(2026, 8, 3)
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=run_date, limit=10)
+            run_valuation_engine(session, as_of_date=run_date, limit=10)
+            run_peer_comparison_engine(session, as_of_date=run_date, limit=10)
+
+            assert session.query(CompanyIntelligenceSnapshot).count() == 2
+            assert session.query(CompanyValuationSnapshot).count() == 2
+            assert session.query(CompanyPeerComparisonSnapshot).count() == 2
+
+            rerun = run_intelligence_engine(session, as_of_date=run_date, limit=10)
+
+            assert rerun.generated == 2
+            assert session.query(CompanyIntelligenceSnapshot).count() == 2
+            assert session.query(CompanyValuationSnapshot).count() == 0
+            assert session.query(CompanyPeerComparisonSnapshot).count() == 0
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_valuation_engine_rerun_clears_peer_children_first():
+    engine = _sqlite_engine(enforce_foreign_keys=True)
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        with factory() as session:
+            run_date = date(2026, 8, 3)
+            _seed_decision_card_data(session)
+
+            run_intelligence_engine(session, as_of_date=run_date, limit=10)
+            run_valuation_engine(session, as_of_date=run_date, limit=10)
+            run_peer_comparison_engine(session, as_of_date=run_date, limit=10)
+
+            assert session.query(CompanyValuationSnapshot).count() == 2
+            assert session.query(CompanyPeerComparisonSnapshot).count() == 2
+
+            rerun = run_valuation_engine(session, as_of_date=run_date, limit=10)
+
+            assert rerun.generated == 2
+            assert session.query(CompanyValuationSnapshot).count() == 2
+            assert session.query(CompanyPeerComparisonSnapshot).count() == 0
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

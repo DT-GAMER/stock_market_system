@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ngx_research.models import (
     Company,
     CompanyIntelligenceSnapshot,
+    CompanyPeerComparisonSnapshot,
     CompanyValuationSnapshot,
     FinancialStatement,
     NgxPulseFundamental,
@@ -53,6 +54,7 @@ def _run_valuation_engine_locked(
 ) -> ValuationRunRead:
     valuation_date = as_of_date or _latest_intelligence_date(session) or datetime.now(UTC).date()
     rows = _latest_intelligence_rows_for_date(session, valuation_date)
+    _clear_dependent_peer_snapshots(session, valuation_date)
     session.execute(
         delete(CompanyValuationSnapshot)
         .where(CompanyValuationSnapshot.as_of_date == valuation_date)
@@ -72,6 +74,15 @@ def _run_valuation_engine_locked(
         generated=len(generated),
         valuations=latest_valuations(session, limit=limit or 100),
     )
+
+
+def _clear_dependent_peer_snapshots(session: Session, valuation_date: date) -> None:
+    session.execute(
+        delete(CompanyPeerComparisonSnapshot)
+        .where(CompanyPeerComparisonSnapshot.as_of_date == valuation_date)
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
 
 
 def _latest_intelligence_rows_for_date(
