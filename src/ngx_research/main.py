@@ -1245,19 +1245,24 @@ def apply_extraction_draft(draft_id: int, session: SessionDep) -> ApplyDraftResu
             detail="financial statement already exists for this company, period, and type",
         ) from exc
 
+    dividend_ids = _apply_dividends_from_draft(session, draft)
     draft.status = "applied"
+    review_note = f"Created financial statement {statement.id}"
+    if dividend_ids:
+        review_note += f" and dividend records {', '.join(str(item) for item in dividend_ids)}"
     session.add(
         DataReviewLog(
             record_type="extraction_drafts",
             record_id=draft.id,
             action="applied",
-            notes=f"Created financial statement {statement.id}",
+            notes=review_note,
         )
     )
     session.commit()
     return ApplyDraftResult(
         draft_id=draft.id,
         financial_statement_id=statement.id,
+        dividend_ids=dividend_ids,
         reviewed=statement.reviewed,
     )
 
@@ -2029,6 +2034,7 @@ async def _create_extraction_draft(
         raw_response, parsed = await extract_financial_statement(selected_text)
     except DeepSeekError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    parsed = _normalize_extraction_parsed_data(parsed, company_id, session)
 
     draft_notes = "\n".join(
         item
@@ -2055,6 +2061,19 @@ async def _create_extraction_draft(
     session.commit()
     session.refresh(draft)
     return draft
+
+
+def _normalize_extraction_parsed_data(
+    parsed: dict,
+    company_id: int | None,
+    session: Session,
+) -> dict:
+    normalized = dict(parsed or {})
+    if company_id and not normalized.get("symbol"):
+        company = session.get(Company, company_id)
+        if company:
+            normalized["symbol"] = company.symbol
+    return normalized
 
 
 def _latest_report_text(session: Session, report_id: int) -> ReportTextExtraction:
@@ -2144,6 +2163,103 @@ def _financial_statement_from_draft(session: Session, draft: ExtractionDraft) ->
         "eps": _optional_decimal(parsed.get("eps"), "eps"),
         "source_document_id": draft.source_document_id,
     }
+
+
+def _apply_dividends_from_draft(session: Session, draft: ExtractionDraft) -> list[int]:
+    parsed = draft.parsed_data or {}
+    company_id = _company_id_from_draft(session, draft)
+    period_end = _optional_iso_date(parsed.get("period_end"), "period_end")
+    dividend_rows = _dividend_rows_from_parsed(parsed)
+    created_or_updated: list[int] = []
+    for row in dividend_rows:
+        amount = _optional_decimal(row.get("amount_per_share"), "dividend amount_per_share")
+        if amount is None or amount <= 0:
+            continue
+        declared_date = _optional_iso_date(row.get("declared_date"), "dividend declared_date")
+        ex_dividend_date = _optional_iso_date(row.get("ex_dividend_date"), "dividend ex_dividend_date")
+        payment_date = _optional_iso_date(row.get("payment_date"), "dividend payment_date")
+        if not any([declared_date, ex_dividend_date, payment_date]) and period_end:
+            declared_date = period_end
+            payment_date = period_end
+        currency = str(row.get("currency") or parsed.get("dividend_currency") or parsed.get("currency") or "NGN").upper()
+        existing = session.scalar(
+            select(Dividend).where(
+                Dividend.company_id == company_id,
+                Dividend.declared_date == declared_date,
+                Dividend.amount_per_share == amount,
+            )
+        )
+        if existing:
+            existing.ex_dividend_date = ex_dividend_date or existing.ex_dividend_date
+            existing.payment_date = payment_date or existing.payment_date
+            existing.currency = currency or existing.currency
+            existing.source_document_id = draft.source_document_id or existing.source_document_id
+            created_or_updated.append(existing.id)
+            continue
+        dividend = Dividend(
+            company_id=company_id,
+            declared_date=declared_date,
+            ex_dividend_date=ex_dividend_date,
+            payment_date=payment_date,
+            amount_per_share=amount,
+            currency=currency,
+            source_document_id=draft.source_document_id,
+            reviewed=False,
+        )
+        session.add(dividend)
+        session.flush()
+        created_or_updated.append(dividend.id)
+    return created_or_updated
+
+
+def _company_id_from_draft(session: Session, draft: ExtractionDraft) -> int:
+    if draft.company_id:
+        return draft.company_id
+    symbol = (draft.parsed_data or {}).get("symbol")
+    if symbol:
+        return _company_by_symbol(session, symbol).id
+    raise HTTPException(status_code=400, detail="draft has no linked company or extracted symbol")
+
+
+def _dividend_rows_from_parsed(parsed: dict) -> list[dict]:
+    rows = parsed.get("dividends")
+    normalized: list[dict] = []
+    if isinstance(rows, list):
+        normalized.extend(row for row in rows if isinstance(row, dict))
+    if parsed.get("dividend_per_share") is not None:
+        normalized.append(
+            {
+                "amount_per_share": parsed.get("dividend_per_share"),
+                "currency": parsed.get("dividend_currency") or parsed.get("currency"),
+                "declared_date": parsed.get("dividend_declared_date"),
+                "ex_dividend_date": parsed.get("dividend_ex_dividend_date"),
+                "payment_date": parsed.get("dividend_payment_date"),
+                "period_label": "FY total",
+            }
+        )
+    seen: set[tuple[str, str, str, str, str]] = set()
+    unique_rows: list[dict] = []
+    for row in normalized:
+        key = (
+            str(row.get("amount_per_share")),
+            str(row.get("currency")),
+            str(row.get("declared_date")),
+            str(row.get("ex_dividend_date")),
+            str(row.get("payment_date")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+    return unique_rows
+
+
+def _optional_iso_date(value, field_name: str) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value
+    return _parse_iso_date(str(value), field_name)
 
 
 def _parse_iso_date(value: str, field_name: str) -> date:

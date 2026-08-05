@@ -223,6 +223,7 @@ class ExtractionDraftRead(BaseModel):
 class ApplyDraftResult(BaseModel):
     draft_id: int
     financial_statement_id: int
+    dividend_ids: list[int] = []
     reviewed: bool
 
 

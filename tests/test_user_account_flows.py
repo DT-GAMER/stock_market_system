@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from ngx_research.database import Base
 from ngx_research.main import (
+    apply_extraction_draft,
     create_extraction_draft_from_report,
     create_extraction_draft_from_text,
     create_my_journal_entry,
@@ -28,6 +29,7 @@ from ngx_research.main import (
 )
 from ngx_research.models import (
     Company,
+    Dividend,
     ExtractionDraft,
     Price,
     ReportTextExtraction,
@@ -314,6 +316,8 @@ def test_manual_draft_without_pdf_creates_manual_source(monkeypatch, session: Se
                 "scale": "millions",
                 "revenue": 2500000,
                 "profit_after_tax": 700000,
+                "dividend_per_share": 8.03,
+                "dividend_currency": "NGN",
                 "confidence": 90,
                 "warnings": [],
                 "summary": "Standalone manual statement extraction.",
@@ -343,6 +347,17 @@ def test_manual_draft_without_pdf_creates_manual_source(monkeypatch, session: Se
     assert source.name == "GTCO annual report 2025"
     assert source.document_type == "manual_financial_text"
     assert "Financial year: 2025" in source.notes
+
+    result = apply_extraction_draft(draft.id, session)
+    dividend = session.get(Dividend, result.dividend_ids[0])
+
+    assert result.financial_statement_id
+    assert len(result.dividend_ids) == 1
+    assert dividend is not None
+    assert dividend.amount_per_share == Decimal("8.0300")
+    assert dividend.currency == "NGN"
+    assert dividend.payment_date == date(2025, 12, 31)
+    assert dividend.reviewed is False
 
 
 def test_manual_draft_without_pdf_requires_source_name_and_year(session: Session) -> None:
