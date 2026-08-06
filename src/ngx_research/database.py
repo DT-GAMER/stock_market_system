@@ -36,15 +36,26 @@ def _safe_database_url(database_url: str) -> str:
         return "<invalid DATABASE_URL>"
 
 
+def _engine_kwargs(database_url: str) -> dict:
+    if database_url.startswith("sqlite"):
+        return {
+            "connect_args": {"check_same_thread": False},
+            "pool_pre_ping": True,
+            "pool_recycle": -1,
+        }
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.database_pool_size,
+        "max_overflow": settings.database_max_overflow,
+        "pool_timeout": settings.database_pool_timeout_seconds,
+        "pool_recycle": settings.database_pool_recycle_seconds,
+    }
+
+
 database_url = _sqlalchemy_database_url(settings.database_url)
 _ensure_sqlite_parent(database_url)
 
-engine = create_engine(
-    database_url,
-    connect_args={"check_same_thread": False} if database_url.startswith("sqlite") else {},
-    pool_pre_ping=True,
-    pool_recycle=1800 if not database_url.startswith("sqlite") else -1,
-)
+engine = create_engine(database_url, **_engine_kwargs(database_url))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 SCHEMA_COLUMN_UPGRADES = {

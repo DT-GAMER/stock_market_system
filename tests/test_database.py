@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ngx_research.database import (
+    _engine_kwargs,
     _ensure_sqlite_parent,
     _safe_database_url,
     _sqlalchemy_database_url,
@@ -31,3 +32,19 @@ def test_safe_database_url_hides_password() -> None:
 
     assert "secret" not in safe_url
     assert "***" in safe_url
+
+
+def test_postgres_engine_uses_configurable_connection_pool() -> None:
+    kwargs = _engine_kwargs("postgresql+psycopg://user:pass@example.com:5432/db")
+
+    assert kwargs["pool_pre_ping"] is True
+    assert kwargs["pool_size"] >= 15
+    assert kwargs["max_overflow"] >= 30
+    assert kwargs["pool_timeout"] == 10
+
+
+def test_sqlite_engine_keeps_thread_check_disabled() -> None:
+    kwargs = _engine_kwargs("sqlite:///./data/test.db")
+
+    assert kwargs["connect_args"] == {"check_same_thread": False}
+    assert kwargs["pool_recycle"] == -1

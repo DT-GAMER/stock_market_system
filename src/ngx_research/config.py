@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     ngxpulse_api_key: str | None = None
     ngxpulse_base_url: str = "https://www.ngxpulse.ng"
+    database_pool_size: int = 15
+    database_max_overflow: int = 30
+    database_pool_timeout_seconds: int = 10
+    database_pool_recycle_seconds: int = 1800
     automation_enabled: bool = True
     automation_run_on_startup: bool = True
     automation_interval_minutes: int = 1440
