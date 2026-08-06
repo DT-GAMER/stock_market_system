@@ -72,6 +72,17 @@ Return JSON with this exact shape:
   "total_equity": number_or_null,
   "cash_flow_operations": number_or_null,
   "eps": number_or_null,
+  "statement_kind": "bank, insurance, industrial, oil_gas, telecom, consumer, or null",
+  "gross_earnings": number_or_null,
+  "interest_income": number_or_null,
+  "net_interest_income": number_or_null,
+  "customer_deposits": number_or_null,
+  "loans_and_advances": number_or_null,
+  "borrowings_total": number_or_null,
+  "interest_expense": number_or_null,
+  "npl_ratio": number_or_null,
+  "capital_adequacy_ratio": number_or_null,
+  "loan_to_deposit_ratio": number_or_null,
   "dividend_per_share": number_or_null,
   "dividend_currency": "NGN, USD, GBP, or null",
   "dividend_declared_date": "YYYY-MM-DD or null",
@@ -90,6 +101,7 @@ Return JSON with this exact shape:
   ],
   "major_risks": ["risk phrases explicitly found in the report"],
   "business_summary": "plain-English business summary if present, otherwise null",
+  "auditor_name": "auditor name if present, otherwise null",
   "auditor_opinion": "auditor opinion if present, otherwise null",
   "corporate_actions": ["material corporate actions explicitly found in the report"],
   "confidence": 0_to_100,
@@ -105,6 +117,12 @@ Rules:
 - Prefer the primary financial statements before notes or narrative summaries.
 - If a value is ambiguous, set it to null and add a warning.
 - Extract revenue and profit_after_tax from statement of profit or loss/comprehensive income.
+- For banks, set statement_kind to "bank" and map revenue to gross earnings. Also extract
+  gross_earnings, interest_income, net_interest_income, customer_deposits, loans_and_advances,
+  borrowings_total, interest_expense, non-performing loan/NPL ratio, capital adequacy ratio/CAR,
+  and loan-to-deposit ratio if explicitly available.
+- For banks, do not treat negative operating cash flow as a warning by itself; changes in loans,
+  advances, deposits, and treasury assets can make operating cash flow negative in normal banking.
 - Extract total_assets, total_liabilities, and total_equity from statement of financial position
   or balance sheet. Accept equivalent labels such as assets, liabilities, equity, net assets,
   total equity and liabilities, shareholders' equity, or equity attributable to owners.

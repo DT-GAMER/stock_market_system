@@ -267,10 +267,12 @@ def _ratio_from_values(
         latest_statement.total_liabilities if latest_statement else None,
         latest_statement.total_equity if latest_statement else None,
     ) or (latest_fundamental.debt_equity if latest_fundamental else None)
-    cash_flow_to_profit = _safe_div(
-        latest_statement.cash_flow_operations if latest_statement else None,
-        latest_statement.profit_after_tax if latest_statement else None,
-    )
+    cash_flow_to_profit = None
+    if not _is_financial_company(company):
+        cash_flow_to_profit = _safe_div(
+            latest_statement.cash_flow_operations if latest_statement else None,
+            latest_statement.profit_after_tax if latest_statement else None,
+        )
     revenue_growth = _safe_growth(
         latest_statement.revenue if latest_statement else None,
         prior_statement.revenue if prior_statement else None,
@@ -348,7 +350,11 @@ def score_company(company: Company, ratio: CompanyRatio) -> CompanyScore:
         and ratio.debt_to_equity > Decimal(5)
     ):
         risks.append("High liabilities relative to equity.")
-    if ratio.cash_flow_to_profit is not None and ratio.cash_flow_to_profit < Decimal("0.5"):
+    if (
+        not _is_financial_company(company)
+        and ratio.cash_flow_to_profit is not None
+        and ratio.cash_flow_to_profit < Decimal("0.5")
+    ):
         risks.append("Weak cash-flow conversion.")
     if ratio.profit_growth is not None and ratio.profit_growth < Decimal(0):
         risks.append("Profit declined versus the previous comparable period.")
@@ -521,7 +527,11 @@ def _score_risk(company: Company, ratio: CompanyRatio) -> Decimal:
         and ratio.debt_to_equity > Decimal(5)
     ):
         score -= Decimal(35)
-    if ratio.cash_flow_to_profit is not None and ratio.cash_flow_to_profit < Decimal("0.5"):
+    if (
+        not _is_financial_company(company)
+        and ratio.cash_flow_to_profit is not None
+        and ratio.cash_flow_to_profit < Decimal("0.5")
+    ):
         score -= Decimal(25)
     if ratio.profit_growth is not None and ratio.profit_growth < Decimal(0):
         score -= Decimal(20)

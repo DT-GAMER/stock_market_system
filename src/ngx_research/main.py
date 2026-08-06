@@ -1317,8 +1317,27 @@ def list_financial_statements(session: SessionDep, limit: int = 100) -> list[Fin
             FinancialStatement.period_type,
             FinancialStatement.revenue,
             FinancialStatement.profit_after_tax,
+            FinancialStatement.total_assets,
+            FinancialStatement.total_liabilities,
             FinancialStatement.total_equity,
+            FinancialStatement.cash_flow_operations,
             FinancialStatement.eps,
+            FinancialStatement.statement_kind,
+            FinancialStatement.gross_earnings,
+            FinancialStatement.interest_income,
+            FinancialStatement.net_interest_income,
+            FinancialStatement.customer_deposits,
+            FinancialStatement.loans_and_advances,
+            FinancialStatement.borrowings_total,
+            FinancialStatement.interest_expense,
+            FinancialStatement.npl_ratio,
+            FinancialStatement.capital_adequacy_ratio,
+            FinancialStatement.loan_to_deposit_ratio,
+            FinancialStatement.business_summary,
+            FinancialStatement.auditor_name,
+            FinancialStatement.auditor_opinion,
+            FinancialStatement.major_risks,
+            FinancialStatement.corporate_actions,
             FinancialStatement.reviewed,
         )
         .join(FinancialStatement, FinancialStatement.company_id == Company.id)
@@ -1349,6 +1368,22 @@ def create_financial_statement(
         total_equity=payload.total_equity,
         cash_flow_operations=payload.cash_flow_operations,
         eps=payload.eps,
+        statement_kind=payload.statement_kind,
+        gross_earnings=payload.gross_earnings,
+        interest_income=payload.interest_income,
+        net_interest_income=payload.net_interest_income,
+        customer_deposits=payload.customer_deposits,
+        loans_and_advances=payload.loans_and_advances,
+        borrowings_total=payload.borrowings_total,
+        interest_expense=payload.interest_expense,
+        npl_ratio=payload.npl_ratio,
+        capital_adequacy_ratio=payload.capital_adequacy_ratio,
+        loan_to_deposit_ratio=payload.loan_to_deposit_ratio,
+        business_summary=payload.business_summary,
+        auditor_name=payload.auditor_name,
+        auditor_opinion=payload.auditor_opinion,
+        major_risks=payload.major_risks,
+        corporate_actions=payload.corporate_actions,
         source_document_id=payload.source_document_id,
         reviewed=False,
     )
@@ -1369,8 +1404,27 @@ def create_financial_statement(
         period_type=statement.period_type,
         revenue=statement.revenue,
         profit_after_tax=statement.profit_after_tax,
+        total_assets=statement.total_assets,
+        total_liabilities=statement.total_liabilities,
         total_equity=statement.total_equity,
+        cash_flow_operations=statement.cash_flow_operations,
         eps=statement.eps,
+        statement_kind=statement.statement_kind,
+        gross_earnings=statement.gross_earnings,
+        interest_income=statement.interest_income,
+        net_interest_income=statement.net_interest_income,
+        customer_deposits=statement.customer_deposits,
+        loans_and_advances=statement.loans_and_advances,
+        borrowings_total=statement.borrowings_total,
+        interest_expense=statement.interest_expense,
+        npl_ratio=statement.npl_ratio,
+        capital_adequacy_ratio=statement.capital_adequacy_ratio,
+        loan_to_deposit_ratio=statement.loan_to_deposit_ratio,
+        business_summary=statement.business_summary,
+        auditor_name=statement.auditor_name,
+        auditor_opinion=statement.auditor_opinion,
+        major_risks=statement.major_risks,
+        corporate_actions=statement.corporate_actions,
         reviewed=statement.reviewed,
     )
 
@@ -2161,6 +2215,32 @@ def _financial_statement_from_draft(session: Session, draft: ExtractionDraft) ->
             parsed.get("cash_flow_operations"), "cash_flow_operations"
         ),
         "eps": _optional_decimal(parsed.get("eps"), "eps"),
+        "statement_kind": _optional_text(parsed.get("statement_kind")),
+        "gross_earnings": _optional_decimal(parsed.get("gross_earnings"), "gross_earnings"),
+        "interest_income": _optional_decimal(parsed.get("interest_income"), "interest_income"),
+        "net_interest_income": _optional_decimal(
+            parsed.get("net_interest_income"), "net_interest_income"
+        ),
+        "customer_deposits": _optional_decimal(
+            parsed.get("customer_deposits"), "customer_deposits"
+        ),
+        "loans_and_advances": _optional_decimal(
+            parsed.get("loans_and_advances"), "loans_and_advances"
+        ),
+        "borrowings_total": _optional_decimal(parsed.get("borrowings_total"), "borrowings_total"),
+        "interest_expense": _optional_decimal(parsed.get("interest_expense"), "interest_expense"),
+        "npl_ratio": _optional_decimal(parsed.get("npl_ratio"), "npl_ratio"),
+        "capital_adequacy_ratio": _optional_decimal(
+            parsed.get("capital_adequacy_ratio"), "capital_adequacy_ratio"
+        ),
+        "loan_to_deposit_ratio": _optional_decimal(
+            parsed.get("loan_to_deposit_ratio"), "loan_to_deposit_ratio"
+        ),
+        "business_summary": _optional_text(parsed.get("business_summary")),
+        "auditor_name": _optional_text(parsed.get("auditor_name")),
+        "auditor_opinion": _optional_text(parsed.get("auditor_opinion")),
+        "major_risks": _optional_text_list(parsed.get("major_risks")),
+        "corporate_actions": _optional_text_list(parsed.get("corporate_actions")),
         "source_document_id": draft.source_document_id,
     }
 
@@ -2276,6 +2356,23 @@ def _optional_decimal(value, field_name: str) -> Decimal | None:
         return Decimal(str(value))
     except InvalidOperation as exc:
         raise HTTPException(status_code=400, detail=f"{field_name} must be numeric") from exc
+
+
+def _optional_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_text_list(value) -> list[str] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, list):
+        items = [_optional_text(item) for item in value]
+        return [item for item in items if item]
+    text = _optional_text(value)
+    return [text] if text else None
 
 
 def _pending_items(session: Session, record_type: str, limit: int) -> list[PendingReviewItem]:

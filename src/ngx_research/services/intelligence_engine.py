@@ -46,11 +46,18 @@ class CompanyMemory:
 
 @dataclass(frozen=True)
 class CompanyPatterns:
+    is_bank_profile: bool
     pe_ratio: Decimal | None
     roe: Decimal | None
     profit_margin: Decimal | None
     dividend_yield: Decimal | None
     debt_to_equity: Decimal | None
+    liabilities_to_equity: Decimal | None
+    npl_ratio: Decimal | None
+    capital_adequacy_ratio: Decimal | None
+    loan_to_deposit_ratio: Decimal | None
+    customer_deposit_growth: Decimal | None
+    loan_growth: Decimal | None
     eps_growth: Decimal | None
     revenue_growth: Decimal | None
     profit_growth: Decimal | None
@@ -234,6 +241,7 @@ def _company_patterns(memory: CompanyMemory, as_of_date: date) -> CompanyPattern
     latest_fundamental = memory.fundamentals[0] if memory.fundamentals else None
     latest_statement = memory.statements[0] if memory.statements else None
     prior_statement = _prior_comparable_statement(memory.statements)
+    is_bank_profile = _is_bank_profile(memory.company, latest_statement)
     pe_ratio = latest_fundamental.pe_ratio if latest_fundamental else None
     roe = _safe_percent(
         latest_statement.profit_after_tax if latest_statement else None,
@@ -246,10 +254,11 @@ def _company_patterns(memory: CompanyMemory, as_of_date: date) -> CompanyPattern
     dividend_yield = _trailing_dividend_yield(memory, as_of_date) or (
         latest_fundamental.dividend_yield if latest_fundamental else None
     )
-    debt_to_equity = _safe_div(
+    liabilities_to_equity = _safe_div(
         latest_statement.total_liabilities if latest_statement else None,
         latest_statement.total_equity if latest_statement else None,
     ) or (latest_fundamental.debt_equity if latest_fundamental else None)
+    debt_to_equity = None if is_bank_profile else liabilities_to_equity
     eps_growth = _fundamental_growth([item.eps for item in memory.fundamentals])
     revenue_growth = _safe_growth(
         latest_statement.revenue if latest_statement else None,
@@ -263,18 +272,31 @@ def _company_patterns(memory: CompanyMemory, as_of_date: date) -> CompanyPattern
     price_high = max((price.close_price for price in memory.prices[:260]), default=None)
     price_drawdown = _safe_percent(price_high - latest_price if price_high and latest_price else None, price_high)
     return CompanyPatterns(
+        is_bank_profile=is_bank_profile,
         pe_ratio=pe_ratio,
         roe=roe,
         profit_margin=profit_margin,
         dividend_yield=dividend_yield,
         debt_to_equity=debt_to_equity,
+        liabilities_to_equity=liabilities_to_equity,
+        npl_ratio=latest_statement.npl_ratio if latest_statement else None,
+        capital_adequacy_ratio=latest_statement.capital_adequacy_ratio if latest_statement else None,
+        loan_to_deposit_ratio=_loan_to_deposit_ratio(latest_statement),
+        customer_deposit_growth=_safe_growth(
+            latest_statement.customer_deposits if latest_statement else None,
+            prior_statement.customer_deposits if prior_statement else None,
+        ),
+        loan_growth=_safe_growth(
+            latest_statement.loans_and_advances if latest_statement else None,
+            prior_statement.loans_and_advances if prior_statement else None,
+        ),
         eps_growth=eps_growth,
         revenue_growth=revenue_growth,
         profit_growth=profit_growth,
         roe_consistency=_consistency([item.roe for item in memory.fundamentals if item.roe is not None]),
         margin_trend=_fundamental_growth([item.profit_margin for item in memory.fundamentals]),
         debt_trend=_fundamental_growth([item.debt_equity for item in memory.fundamentals]),
-        cash_flow_quality=_cash_flow_quality(latest_statement),
+        cash_flow_quality=_cash_flow_quality(latest_statement, is_bank_profile),
         dividend_years=_dividend_years(memory.dividends),
         dividend_growth=_dividend_growth(memory.dividends),
         payout_safety=_payout_safety(latest_fundamental, latest_statement),
@@ -334,7 +356,7 @@ def _build_snapshot(
         + confidence * Decimal("0.06")
     ).quantize(Decimal("0.01"))
     missing_data = _missing_data(memory, patterns)
-    risks = _risks(patterns, classification.risks, missing_data)
+    risks = _risks(patterns, classification.risks, missing_data, memory)
     label = _final_label(overall, quality, valuation, dividend, risk, liquidity, confidence, classification.stock_types, risks)
     reasons = _reasons(patterns, sector_stats, classification.reasons, label)
     next_actions = _next_actions(label, missing_data, risks)
@@ -462,6 +484,13 @@ def _sector_stats(
 
 
 def _quality_score(patterns: CompanyPatterns, sector: SectorStats) -> Decimal:
+    if patterns.is_bank_profile:
+        return _average(
+            _score_higher(patterns.roe, Decimal(5), max(sector.roe_median or Decimal(20), Decimal(20))),
+            _score_higher(patterns.profit_margin, Decimal(5), max(sector.margin_median or Decimal(20), Decimal(20))),
+            _score_higher(patterns.capital_adequacy_ratio, Decimal(10), Decimal(25)),
+            _score_lower(patterns.npl_ratio, Decimal(3), Decimal(10)),
+        )
     return _average(
         _score_higher(patterns.roe, Decimal(5), max(sector.roe_median or Decimal(20), Decimal(20))),
         _score_higher(patterns.profit_margin, Decimal(5), max(sector.margin_median or Decimal(20), Decimal(20))),
@@ -500,6 +529,22 @@ def _dividend_score(patterns: CompanyPatterns, sector: SectorStats) -> Decimal:
 
 def _financial_risk_score(patterns: CompanyPatterns) -> Decimal:
     score = HUNDRED
+    if patterns.is_bank_profile:
+        if patterns.capital_adequacy_ratio is not None:
+            if patterns.capital_adequacy_ratio < Decimal(15):
+                score -= Decimal(35)
+            elif patterns.capital_adequacy_ratio < Decimal(20):
+                score -= Decimal(12)
+        if patterns.npl_ratio is not None:
+            if patterns.npl_ratio > Decimal(10):
+                score -= Decimal(35)
+            elif patterns.npl_ratio > Decimal(5):
+                score -= Decimal(15)
+        if patterns.loan_to_deposit_ratio is not None and patterns.loan_to_deposit_ratio > Decimal(90):
+            score -= Decimal(15)
+        if patterns.volatility is not None and patterns.volatility > Decimal(6):
+            score -= Decimal(15)
+        return max(Decimal(0), score)
     if patterns.debt_to_equity is not None and patterns.debt_to_equity > Decimal(3):
         score -= Decimal(25)
     if patterns.cash_flow_quality is not None and patterns.cash_flow_quality < Decimal(50):
@@ -562,6 +607,13 @@ def _reasons(
         reasons.append("Profit margin compares well against sector peers.")
     if patterns.pe_ratio is not None and sector.pe_median is not None and patterns.pe_ratio <= sector.pe_median:
         reasons.append("P/E is not expensive compared with sector median.")
+    if patterns.is_bank_profile:
+        if patterns.capital_adequacy_ratio is not None and patterns.capital_adequacy_ratio >= Decimal(20):
+            reasons.append("Capital adequacy is strong for a bank profile.")
+        if patterns.npl_ratio is not None and patterns.npl_ratio <= Decimal(5):
+            reasons.append("NPL ratio is within a controlled credit-risk range.")
+        if patterns.customer_deposit_growth is not None and patterns.customer_deposit_growth >= Decimal(5):
+            reasons.append("Customer deposits are growing, supporting funding strength.")
     if patterns.liquidity_score >= Decimal(65):
         reasons.append("Trading liquidity appears reliable enough for retail execution.")
     if label == "Top Research Candidate":
@@ -573,12 +625,23 @@ def _risks(
     patterns: CompanyPatterns,
     classification_risks: list[str],
     missing_data: list[str],
+    memory: CompanyMemory,
 ) -> list[str]:
     risks = list(classification_risks)
+    latest_statement = memory.statements[0] if memory.statements else None
+    if latest_statement and latest_statement.major_risks:
+        risks.extend(latest_statement.major_risks[:5])
     if patterns.data_confidence < Decimal(70):
         risks.append("Data confidence is below preferred threshold.")
     if patterns.pe_ratio is None:
         risks.append("Valuation cannot be confirmed without P/E or EPS support.")
+    if patterns.is_bank_profile:
+        if patterns.capital_adequacy_ratio is not None and patterns.capital_adequacy_ratio < Decimal(15):
+            risks.append("Capital adequacy is below the preferred buffer for a bank.")
+        if patterns.npl_ratio is not None and patterns.npl_ratio > Decimal(5):
+            risks.append("NPL ratio is above the preferred credit-quality threshold.")
+        if patterns.loan_to_deposit_ratio is not None and patterns.loan_to_deposit_ratio > Decimal(90):
+            risks.append("Loan-to-deposit ratio is high, so funding/liquidity discipline needs review.")
     if patterns.dividend_years == 0:
         if patterns.dividend_yield is not None:
             risks.append(
@@ -608,6 +671,13 @@ def _missing_data(memory: CompanyMemory, patterns: CompanyPatterns) -> list[str]
         missing.append("P/E ratio")
     if patterns.roe is None:
         missing.append("ROE")
+    if patterns.is_bank_profile:
+        if patterns.capital_adequacy_ratio is None:
+            missing.append("capital adequacy ratio")
+        if patterns.npl_ratio is None:
+            missing.append("NPL ratio")
+        if patterns.customer_deposit_growth is None:
+            missing.append("customer deposit history")
     return missing
 
 
@@ -638,8 +708,11 @@ def _decision_change_triggers(label: str) -> list[str]:
 
 def _metrics(patterns: CompanyPatterns, sector: SectorStats, memory: CompanyMemory) -> dict:
     latest_price = memory.latest_price.close_price if memory.latest_price else None
+    latest_statement = memory.statements[0] if memory.statements else None
     return {
         "latest_price": _json_decimal(latest_price),
+        "is_bank_profile": patterns.is_bank_profile,
+        "statement_kind": latest_statement.statement_kind if latest_statement else None,
         "pe_ratio": _json_decimal(patterns.pe_ratio),
         "sector_pe_median": _json_decimal(sector.pe_median),
         "roe": _json_decimal(patterns.roe),
@@ -653,14 +726,39 @@ def _metrics(patterns: CompanyPatterns, sector: SectorStats, memory: CompanyMemo
         "roe_consistency": _json_decimal(patterns.roe_consistency),
         "margin_trend": _json_decimal(patterns.margin_trend),
         "debt_to_equity": _json_decimal(patterns.debt_to_equity),
+        "liabilities_to_equity": _json_decimal(patterns.liabilities_to_equity),
         "debt_trend": _json_decimal(patterns.debt_trend),
         "cash_flow_quality": _json_decimal(patterns.cash_flow_quality),
+        "cash_flow_operations": _json_decimal(latest_statement.cash_flow_operations if latest_statement else None),
         "price_drawdown_percent": _json_decimal(patterns.price_drawdown_percent),
         "volatility": _json_decimal(patterns.volatility),
         "liquidity_score": _json_decimal(patterns.liquidity_score),
         "dividend_growth": _json_decimal(patterns.dividend_growth),
         "payout_safety": _json_decimal(patterns.payout_safety),
         "data_confidence": _json_decimal(patterns.data_confidence),
+        "gross_earnings": _json_decimal(latest_statement.gross_earnings if latest_statement else None),
+        "interest_income": _json_decimal(latest_statement.interest_income if latest_statement else None),
+        "net_interest_income": _json_decimal(
+            latest_statement.net_interest_income if latest_statement else None
+        ),
+        "customer_deposits": _json_decimal(
+            latest_statement.customer_deposits if latest_statement else None
+        ),
+        "loans_and_advances": _json_decimal(
+            latest_statement.loans_and_advances if latest_statement else None
+        ),
+        "borrowings_total": _json_decimal(latest_statement.borrowings_total if latest_statement else None),
+        "interest_expense": _json_decimal(latest_statement.interest_expense if latest_statement else None),
+        "npl_ratio": _json_decimal(patterns.npl_ratio),
+        "capital_adequacy_ratio": _json_decimal(patterns.capital_adequacy_ratio),
+        "loan_to_deposit_ratio": _json_decimal(patterns.loan_to_deposit_ratio),
+        "customer_deposit_growth": _json_decimal(patterns.customer_deposit_growth),
+        "loan_growth": _json_decimal(patterns.loan_growth),
+        "business_summary": latest_statement.business_summary if latest_statement else None,
+        "auditor_name": latest_statement.auditor_name if latest_statement else None,
+        "auditor_opinion": latest_statement.auditor_opinion if latest_statement else None,
+        "major_risks": latest_statement.major_risks if latest_statement else None,
+        "corporate_actions": latest_statement.corporate_actions if latest_statement else None,
     }
 
 
@@ -741,13 +839,39 @@ def _payout_safety(
     return None
 
 
-def _cash_flow_quality(statement: FinancialStatement | None) -> Decimal | None:
+def _cash_flow_quality(statement: FinancialStatement | None, is_bank_profile: bool = False) -> Decimal | None:
     if not statement:
         return None
+    if is_bank_profile:
+        score = Decimal(55)
+        if statement.profit_after_tax is not None and statement.profit_after_tax > 0:
+            score += Decimal(15)
+        if statement.capital_adequacy_ratio is not None:
+            if statement.capital_adequacy_ratio >= Decimal(20):
+                score += Decimal(15)
+            elif statement.capital_adequacy_ratio < Decimal(15):
+                score -= Decimal(20)
+        if statement.npl_ratio is not None:
+            if statement.npl_ratio <= Decimal(5):
+                score += Decimal(10)
+            elif statement.npl_ratio > Decimal(10):
+                score -= Decimal(25)
+        if statement.customer_deposits is not None and statement.loans_and_advances is not None:
+            score += Decimal(5)
+        return min(max(score, Decimal(0)), HUNDRED)
     ratio = _safe_div(statement.cash_flow_operations, statement.profit_after_tax)
     if ratio is None:
         return None
     return _score_higher(ratio, Decimal("0.4"), Decimal("1.2"))
+
+
+def _loan_to_deposit_ratio(statement: FinancialStatement | None) -> Decimal | None:
+    if not statement:
+        return None
+    return statement.loan_to_deposit_ratio or _safe_percent(
+        statement.loans_and_advances,
+        statement.customer_deposits,
+    )
 
 
 def _fundamental_growth(values: list[Decimal | None]) -> Decimal | None:
@@ -834,6 +958,29 @@ def _score_higher(value: Decimal | None, low: Decimal, high: Decimal) -> Decimal
     if value >= high:
         return HUNDRED
     return (((value - low) / (high - low)) * HUNDRED).quantize(Decimal("0.01"))
+
+
+def _score_lower(value: Decimal | None, low: Decimal, high: Decimal) -> Decimal:
+    if value is None:
+        return Decimal(0)
+    if value <= low:
+        return HUNDRED
+    if value >= high:
+        return Decimal(0)
+    return (((high - value) / (high - low)) * HUNDRED).quantize(Decimal("0.01"))
+
+
+def _is_bank_profile(company: Company, statement: FinancialStatement | None) -> bool:
+    if statement and (
+        str(statement.statement_kind or "").lower() == "bank"
+        or statement.customer_deposits is not None
+        or statement.loans_and_advances is not None
+        or statement.npl_ratio is not None
+        or statement.capital_adequacy_ratio is not None
+    ):
+        return True
+    descriptor = f"{company.symbol} {company.name} {company.sector or ''}".lower()
+    return "bank" in descriptor or "banking" in descriptor
 
 
 def _average(*values: Decimal) -> Decimal:

@@ -323,8 +323,27 @@ class FinancialStatementRead(BaseModel):
     period_type: str
     revenue: Decimal | None
     profit_after_tax: Decimal | None
+    total_assets: Decimal | None = None
+    total_liabilities: Decimal | None = None
     total_equity: Decimal | None
+    cash_flow_operations: Decimal | None = None
     eps: Decimal | None
+    statement_kind: str | None = None
+    gross_earnings: Decimal | None = None
+    interest_income: Decimal | None = None
+    net_interest_income: Decimal | None = None
+    customer_deposits: Decimal | None = None
+    loans_and_advances: Decimal | None = None
+    borrowings_total: Decimal | None = None
+    interest_expense: Decimal | None = None
+    npl_ratio: Decimal | None = None
+    capital_adequacy_ratio: Decimal | None = None
+    loan_to_deposit_ratio: Decimal | None = None
+    business_summary: str | None = None
+    auditor_name: str | None = None
+    auditor_opinion: str | None = None
+    major_risks: list[str] | None = None
+    corporate_actions: list[str] | None = None
     reviewed: bool
 
 
@@ -561,6 +580,22 @@ class FinancialStatementCreate(BaseModel):
     total_equity: Decimal | None = None
     cash_flow_operations: Decimal | None = None
     eps: Decimal | None = None
+    statement_kind: str | None = None
+    gross_earnings: Decimal | None = None
+    interest_income: Decimal | None = None
+    net_interest_income: Decimal | None = None
+    customer_deposits: Decimal | None = None
+    loans_and_advances: Decimal | None = None
+    borrowings_total: Decimal | None = None
+    interest_expense: Decimal | None = None
+    npl_ratio: Decimal | None = None
+    capital_adequacy_ratio: Decimal | None = None
+    loan_to_deposit_ratio: Decimal | None = None
+    business_summary: str | None = None
+    auditor_name: str | None = None
+    auditor_opinion: str | None = None
+    major_risks: list[str] | None = None
+    corporate_actions: list[str] | None = None
     source_document_id: int | None = None
 
 

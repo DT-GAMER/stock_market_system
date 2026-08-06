@@ -71,7 +71,7 @@ def decision_card(session: Session, symbol: str) -> DecisionCardRead:
     valuation = valuation_snapshot_read(*valuation_row) if valuation_row else None
     peer_row = latest_company_peer_comparison_snapshot(session, company.id)
     peer_comparison = peer_comparison_snapshot_read(*peer_row) if peer_row else None
-    health_checks = _health_checks(snapshot, metrics, source_summary)
+    health_checks = _health_checks(company, snapshot, metrics, source_summary)
 
     return DecisionCardRead(
         symbol=company.symbol,
@@ -872,15 +872,26 @@ def _decision_summary(
 
 
 def _health_checks(
+    company: Company,
     snapshot: CompanyIntelligenceSnapshot,
     metrics: dict,
     source_summary: dict,
 ) -> list[DecisionCardMetricRead]:
+    is_bank_profile = _is_bank_profile(company, metrics)
+    revenue_label = "Gross earnings" if is_bank_profile else "Revenue"
     return [
-        _growth_check("Revenue", _decimal(metrics.get("revenue_growth"))),
+        _growth_check(revenue_label, _decimal(metrics.get("revenue_growth"))),
         _profit_check(snapshot, metrics),
-        _cash_flow_check(_decimal(metrics.get("cash_flow_quality"))),
-        _debt_check(_decimal(metrics.get("debt_to_equity")), _decimal(metrics.get("debt_trend"))),
+        (
+            _bank_cash_flow_check(metrics)
+            if is_bank_profile
+            else _cash_flow_check(_decimal(metrics.get("cash_flow_quality")))
+        ),
+        (
+            _bank_capital_credit_check(metrics)
+            if is_bank_profile
+            else _debt_check(_decimal(metrics.get("debt_to_equity")), _decimal(metrics.get("debt_trend")))
+        ),
         _dividend_check(snapshot, metrics),
         _liquidity_check(snapshot, source_summary),
         _data_confidence_check(snapshot, source_summary),
@@ -974,6 +985,51 @@ def _cash_flow_check(cash_flow_quality: Decimal | None) -> DecisionCardMetricRea
     )
 
 
+def _bank_cash_flow_check(metrics: dict) -> DecisionCardMetricRead:
+    score = _decimal(metrics.get("cash_flow_quality"))
+    operating_cash_flow = _decimal(metrics.get("cash_flow_operations"))
+    deposits = _decimal(metrics.get("customer_deposits"))
+    loans = _decimal(metrics.get("loans_and_advances"))
+    if score is None:
+        return DecisionCardMetricRead(
+            label="Bank cash-flow context",
+            status="Incomplete",
+            detail=(
+                "For banks, operating cash flow is not judged like an industrial company because "
+                "loan and deposit movements flow through operating activities."
+            ),
+            evidence=["Add bank statement metrics: deposits, loans, NPL ratio, and CAR."],
+        )
+    if score >= Decimal(75):
+        status = "Healthy"
+        detail = (
+            "Bank cash-flow context is healthy. The system is judging funding, profitability, "
+            "capital buffer, and credit quality rather than one operating-cash-flow line."
+        )
+    elif score >= Decimal(55):
+        status = "Watch"
+        detail = (
+            "Bank cash-flow context is acceptable, but credit quality and capital buffer should "
+            "still be monitored."
+        )
+    else:
+        status = "Weak"
+        detail = "Bank funding or credit-quality evidence is weak enough to reduce confidence."
+    evidence = [
+        _metric_sentence("operating cash flow", operating_cash_flow),
+        _metric_sentence("customer deposits", deposits),
+        _metric_sentence("loans and advances", loans),
+    ]
+    evidence.append("Negative operating cash flow alone is not treated as a bank red flag.")
+    return DecisionCardMetricRead(
+        label="Bank cash-flow context",
+        status=status,
+        score=score,
+        detail=detail,
+        evidence=[item for item in evidence if item],
+    )
+
+
 def _debt_check(
     debt_to_equity: Decimal | None,
     debt_trend: Decimal | None,
@@ -999,6 +1055,51 @@ def _debt_check(
         direction = "rising" if debt_trend > 0 else "falling"
         evidence.append(f"Debt trend is {direction} by {_fmt_percent(abs(debt_trend))}.")
     return DecisionCardMetricRead(label="Debt", status=status, detail=detail, evidence=evidence)
+
+
+def _bank_capital_credit_check(metrics: dict) -> DecisionCardMetricRead:
+    car = _decimal(metrics.get("capital_adequacy_ratio"))
+    npl = _decimal(metrics.get("npl_ratio"))
+    loan_to_deposit = _decimal(metrics.get("loan_to_deposit_ratio"))
+    liabilities_to_equity = _decimal(metrics.get("liabilities_to_equity"))
+    if car is None and npl is None:
+        return DecisionCardMetricRead(
+            label="Capital and credit risk",
+            status="Missing",
+            detail=(
+                "Bank leverage cannot be judged with ordinary debt-to-equity alone. Add CAR and "
+                "NPL ratio from the annual report."
+            ),
+            evidence=["Required bank metrics: capital adequacy ratio and NPL ratio."],
+        )
+    concerns: list[str] = []
+    if car is not None and car < Decimal(15):
+        concerns.append("capital adequacy is below the preferred buffer")
+    if npl is not None and npl > Decimal(5):
+        concerns.append("NPL ratio is above the preferred credit-quality threshold")
+    if loan_to_deposit is not None and loan_to_deposit > Decimal(90):
+        concerns.append("loan-to-deposit ratio is high")
+    if not concerns and car is not None and car >= Decimal(20) and (npl is None or npl <= Decimal(5)):
+        status = "Strong"
+        detail = "Capital buffer and credit quality look strong for a bank profile."
+    elif concerns:
+        status = "Watch"
+        detail = "Bank balance-sheet risk needs monitoring because " + "; ".join(concerns) + "."
+    else:
+        status = "Acceptable"
+        detail = "Bank capital and credit metrics are present, but not strong enough to ignore."
+    evidence = [
+        _metric_sentence("capital adequacy ratio", car, suffix="%"),
+        _metric_sentence("NPL ratio", npl, suffix="%"),
+        _metric_sentence("loan-to-deposit ratio", loan_to_deposit, suffix="%"),
+        _metric_sentence("liabilities-to-equity", liabilities_to_equity),
+    ]
+    return DecisionCardMetricRead(
+        label="Capital and credit risk",
+        status=status,
+        detail=detail,
+        evidence=[item for item in evidence if item],
+    )
 
 
 def _dividend_check(
@@ -1745,6 +1846,25 @@ def _type_changes(previous_types: list[str], current_types: list[str]) -> list[s
     if removed:
         points.append("Stock type evidence removed: " + ", ".join(removed) + ".")
     return points
+
+
+def _is_bank_profile(company: Company, metrics: dict) -> bool:
+    if metrics.get("is_bank_profile") is True:
+        return True
+    if str(metrics.get("statement_kind") or "").lower() == "bank":
+        return True
+    if any(
+        metrics.get(key) not in (None, "")
+        for key in (
+            "customer_deposits",
+            "loans_and_advances",
+            "npl_ratio",
+            "capital_adequacy_ratio",
+        )
+    ):
+        return True
+    descriptor = f"{company.symbol} {company.name} {company.sector or ''}".lower()
+    return "bank" in descriptor or "banking" in descriptor
 
 
 def _metric_sentence(

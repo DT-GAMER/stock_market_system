@@ -31,6 +31,7 @@ from ngx_research.models import (
     Company,
     Dividend,
     ExtractionDraft,
+    FinancialStatement,
     Price,
     ReportTextExtraction,
     SourceDocument,
@@ -358,6 +359,90 @@ def test_manual_draft_without_pdf_creates_manual_source(monkeypatch, session: Se
     assert dividend.currency == "NGN"
     assert dividend.payment_date == date(2025, 12, 31)
     assert dividend.reviewed is False
+
+
+def test_manual_bank_draft_applies_bank_specific_metrics(monkeypatch, session: Session) -> None:
+    seed_company(session, "ZENITHBANK", "Zenith Bank Plc")
+
+    async def fake_extract_financial_statement(report_text: str):
+        assert "Non-performing loan" in report_text
+        return (
+            "{}",
+            {
+                "symbol": "ZENITHBANK",
+                "period_end": "2016-12-31",
+                "period_type": "FY",
+                "currency": "NGN",
+                "scale": "millions",
+                "statement_kind": "bank",
+                "revenue": 507997,
+                "gross_earnings": 507997,
+                "interest_income": 384557,
+                "net_interest_income": 240179,
+                "profit_after_tax": 129652,
+                "total_assets": 4739825,
+                "total_liabilities": 4035360,
+                "total_equity": 704465,
+                "cash_flow_operations": -1660,
+                "eps": 4.12,
+                "customer_deposits": 2983621,
+                "loans_and_advances": 2289365,
+                "borrowings_total": 767227,
+                "interest_expense": 144378,
+                "npl_ratio": 3.02,
+                "capital_adequacy_ratio": 23,
+                "loan_to_deposit_ratio": 76.7,
+                "dividend_per_share": 2.02,
+                "dividend_currency": "NGN",
+                "major_risks": [
+                    "oil price/FX scarcity impact on loan impairment",
+                    "NPL ratio rising",
+                ],
+                "business_summary": "Large Nigerian bank with resilient recession-year earnings.",
+                "auditor_name": "KPMG Professional Services",
+                "auditor_opinion": "Unqualified opinion; KAMs: loan impairment and derivatives.",
+                "corporate_actions": ["Final dividend proposed"],
+                "confidence": 95,
+                "warnings": [],
+                "summary": "Zenith Bank FY2016 bank extraction.",
+            },
+        )
+
+    monkeypatch.setattr(
+        "ngx_research.main.extract_financial_statement",
+        fake_extract_financial_statement,
+    )
+
+    draft = anyio.run(
+        create_extraction_draft_from_text,
+        ExtractionDraftCreate(
+            symbol="ZENITHBANK",
+            source_name="Zenith Bank annual report",
+            report_year=2016,
+            report_text="Non-performing loan ratio 3.02%. Capital adequacy ratio 23%.",
+        ),
+        session,
+    )
+    result = apply_extraction_draft(draft.id, session)
+    statement = session.get(FinancialStatement, result.financial_statement_id)
+    dividend = session.get(Dividend, result.dividend_ids[0])
+
+    assert statement is not None
+    assert statement.statement_kind == "bank"
+    assert statement.gross_earnings == Decimal("507997.0000")
+    assert statement.customer_deposits == Decimal("2983621.0000")
+    assert statement.loans_and_advances == Decimal("2289365.0000")
+    assert statement.npl_ratio == Decimal("3.0200")
+    assert statement.capital_adequacy_ratio == Decimal("23.0000")
+    assert statement.business_summary == "Large Nigerian bank with resilient recession-year earnings."
+    assert statement.auditor_name == "KPMG Professional Services"
+    assert statement.major_risks == [
+        "oil price/FX scarcity impact on loan impairment",
+        "NPL ratio rising",
+    ]
+    assert dividend is not None
+    assert dividend.amount_per_share == Decimal("2.0200")
+    assert dividend.currency == "NGN"
 
 
 def test_manual_draft_without_pdf_requires_source_name_and_year(session: Session) -> None:
