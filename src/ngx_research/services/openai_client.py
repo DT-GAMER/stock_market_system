@@ -1,4 +1,3 @@
-import base64
 import json
 from pathlib import Path
 
@@ -26,27 +25,42 @@ async def extract_financial_statement_from_pdf(
     if file_path.suffix.lower() != ".pdf":
         raise OpenAIExtractionError("uploaded report is not a PDF")
 
-    file_data = _pdf_file_data(file_path)
     async with httpx.AsyncClient(timeout=180) as client:
-        raw_content = await _extract_with_responses_api(
-            client=client,
-            file_data=file_data,
-            filename=filename,
-            company_symbol=company_symbol,
-            company_name=company_name,
-        )
+        file_id = await _upload_file(client, file_path, filename)
+        try:
+            raw_content = await _extract_with_responses_api(
+                client=client,
+                file_id=file_id,
+                filename=filename,
+                company_symbol=company_symbol,
+                company_name=company_name,
+            )
+        finally:
+            await _delete_file(client, file_id)
 
     return raw_content, _parse_json_content(raw_content)
 
 
-def _pdf_file_data(file_path: Path) -> str:
-    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
-    return f"data:application/pdf;base64,{encoded}"
+async def _upload_file(client: httpx.AsyncClient, file_path: Path, filename: str) -> str:
+    with file_path.open("rb") as file:
+        response = await client.post(
+            f"{settings.openai_base_url.rstrip('/')}/files",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            data={"purpose": "user_data"},
+            files={"file": (filename or file_path.name, file, "application/pdf")},
+        )
+    if response.status_code >= 400:
+        raise OpenAIExtractionError(f"OpenAI file upload failed: {response.status_code} {response.text}")
+
+    file_id = response.json().get("id")
+    if not file_id:
+        raise OpenAIExtractionError("OpenAI file upload did not return a file id")
+    return file_id
 
 
 async def _extract_with_responses_api(
     client: httpx.AsyncClient,
-    file_data: str,
+    file_id: str,
     filename: str,
     company_symbol: str | None,
     company_name: str | None,
@@ -70,8 +84,9 @@ async def _extract_with_responses_api(
                         },
                         {
                             "type": "input_file",
-                            "file_data": file_data,
+                            "file_id": file_id,
                             "filename": filename,
+                            "detail": settings.openai_pdf_detail,
                         },
                     ],
                 }
@@ -81,6 +96,18 @@ async def _extract_with_responses_api(
     if response.status_code >= 400:
         raise OpenAIExtractionError(f"OpenAI extraction failed: {response.status_code} {response.text}")
     return _response_output_text(response.json())
+
+
+async def _delete_file(client: httpx.AsyncClient, file_id: str) -> None:
+    if not file_id:
+        return
+    try:
+        await client.delete(
+            f"{settings.openai_base_url.rstrip('/')}/files/{file_id}",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+        )
+    except httpx.HTTPError:
+        pass
 
 
 def _response_output_text(body: dict) -> str:

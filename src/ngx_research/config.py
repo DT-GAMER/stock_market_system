@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-5.6-luna"
     openai_reasoning_effort: str = "medium"
+    openai_pdf_detail: str = "low"
     ngxpulse_api_key: str | None = None
     ngxpulse_base_url: str = "https://www.ngxpulse.ng"
     database_pool_size: int = 15
