@@ -67,6 +67,7 @@ def test_responses_request_uses_file_id_and_low_detail(monkeypatch) -> None:
     assert file_part["file_id"] == "file-test"
     assert file_part["detail"] == "low"
     assert "file_data" not in file_part
+    assert "filename" not in file_part
 
 
 def test_response_output_text_reads_top_level_output_text() -> None:

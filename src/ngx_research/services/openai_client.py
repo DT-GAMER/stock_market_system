@@ -85,7 +85,6 @@ async def _extract_with_responses_api(
                         {
                             "type": "input_file",
                             "file_id": file_id,
-                            "filename": filename,
                             "detail": settings.openai_pdf_detail,
                         },
                     ],
