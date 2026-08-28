@@ -14,6 +14,7 @@ from ngx_research.main import (
     apply_extraction_draft,
     create_extraction_draft_from_report,
     create_extraction_draft_from_text,
+    create_gpt_extraction_draft_from_report,
     create_my_journal_entry,
     create_my_portfolio_transaction,
     delete_report,
@@ -300,6 +301,82 @@ def test_report_draft_endpoint_reuses_linked_manual_draft(monkeypatch, session: 
     assert reused_draft.id == manual_draft.id
     assert reused_draft.parsed_data["revenue"] == 138281
     assert session.get(UploadedReport, report.id).status == "manual_draft_created"
+
+
+def test_gpt_report_draft_endpoint_creates_openai_draft(monkeypatch, session: Session, tmp_path) -> None:
+    company = seed_company(session, "SEPLAT", "Seplat Energy Plc")
+    source = SourceDocument(name="SEPLAT 2017 Annual Report", document_type="financial_report")
+    session.add(source)
+    session.flush()
+    stored_file = tmp_path / "seplat-2017.pdf"
+    stored_file.write_bytes(b"%PDF-1.7")
+    report = UploadedReport(
+        source_document_id=source.id,
+        company_id=company.id,
+        original_filename="seplat-2017.pdf",
+        stored_path=str(stored_file),
+        content_type="application/pdf",
+        file_size=8,
+        sha256="d" * 64,
+        status="uploaded",
+    )
+    session.add(report)
+    session.commit()
+
+    async def fake_extract_financial_statement_from_pdf(
+        pdf_path: str,
+        filename: str,
+        company_symbol: str | None = None,
+        company_name: str | None = None,
+    ):
+        assert pdf_path == str(stored_file)
+        assert filename == "seplat-2017.pdf"
+        assert company_symbol == "SEPLAT"
+        assert company_name == "Seplat Energy Plc"
+        return (
+            "{}",
+            {
+                "period_end": "2017-12-31",
+                "period_type": "FY",
+                "currency": "NGN",
+                "scale": "millions",
+                "revenue": 138281,
+                "profit_after_tax": 81111,
+                "total_assets": 799553,
+                "total_liabilities": 339907,
+                "total_equity": 459646,
+                "cash_flow_operations": 118414,
+                "eps": 143.96,
+                "dividend_per_share": 2.5,
+                "profit_before_tax": 91600,
+                "cash_and_cash_equivalents": 180000,
+                "finance_cost": 12000,
+                "major_risks": ["commodity price risk"],
+                "business_summary": "Integrated Nigerian energy company.",
+                "auditor_opinion": "Unqualified opinion.",
+            },
+        )
+
+    monkeypatch.setattr(
+        "ngx_research.main.extract_financial_statement_from_pdf",
+        fake_extract_financial_statement_from_pdf,
+    )
+
+    draft = anyio.run(create_gpt_extraction_draft_from_report, report.id, session)
+
+    assert draft.provider == "openai"
+    assert draft.model == "gpt-5.6-luna"
+    assert draft.uploaded_report_id == report.id
+    assert draft.parsed_data["symbol"] == "SEPLAT"
+    assert draft.parsed_data["profit_before_tax"] == 91600
+    assert session.get(UploadedReport, report.id).status == "gpt_draft_created"
+
+    result = apply_extraction_draft(draft.id, session)
+    statement = session.get(FinancialStatement, result.financial_statement_id)
+
+    assert statement is not None
+    assert statement.interest_expense == Decimal("12000.0000")
+    assert statement.business_summary == "Integrated Nigerian energy company."
 
 
 def test_manual_draft_without_pdf_creates_manual_source(monkeypatch, session: Session) -> None:

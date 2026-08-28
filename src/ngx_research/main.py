@@ -194,6 +194,10 @@ from ngx_research.services.ngxpulse_client import (
     sync_nasd_otc_stocks,
     sync_symbol_prices,
 )
+from ngx_research.services.openai_client import (
+    OpenAIExtractionError,
+    extract_financial_statement_from_pdf,
+)
 from ngx_research.services.pdf_extractor import PdfExtractionError, extract_pdf_text
 from ngx_research.services.peer_comparison_engine import (
     company_peer_comparison,
@@ -1218,6 +1222,51 @@ async def create_extraction_draft_from_report(report_id: int, session: SessionDe
     return draft
 
 
+@app.post("/reports/{report_id}/gpt-extraction-drafts", response_model=ExtractionDraftRead)
+async def create_gpt_extraction_draft_from_report(
+    report_id: int,
+    session: SessionDep,
+) -> ExtractionDraft:
+    report = session.get(UploadedReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="uploaded report not found")
+
+    company = session.get(Company, report.company_id) if report.company_id else None
+    try:
+        raw_response, parsed = await extract_financial_statement_from_pdf(
+            pdf_path=report.stored_path,
+            filename=report.original_filename,
+            company_symbol=company.symbol if company else None,
+            company_name=company.name if company else None,
+        )
+    except OpenAIExtractionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    parsed = _normalize_extraction_parsed_data(
+        parsed,
+        company_id=report.company_id,
+        session=session,
+    )
+    draft = ExtractionDraft(
+        company_id=report.company_id,
+        source_document_id=report.source_document_id,
+        uploaded_report_id=report.id,
+        extraction_type="financial_statement",
+        provider="openai",
+        model=settings.openai_model,
+        prompt_text="OpenAI direct PDF annual report extraction prompt.",
+        raw_response=raw_response,
+        parsed_data=parsed,
+        status="draft",
+        notes=f"Generated directly from uploaded PDF with {settings.openai_model}.",
+    )
+    session.add(draft)
+    report.status = "gpt_draft_created"
+    session.commit()
+    session.refresh(draft)
+    return draft
+
+
 @app.get("/llm/extraction-drafts", response_model=list[ExtractionDraftRead])
 def list_extraction_drafts(session: SessionDep, limit: int = 100) -> list[ExtractionDraft]:
     return list(
@@ -2228,7 +2277,10 @@ def _financial_statement_from_draft(session: Session, draft: ExtractionDraft) ->
             parsed.get("loans_and_advances"), "loans_and_advances"
         ),
         "borrowings_total": _optional_decimal(parsed.get("borrowings_total"), "borrowings_total"),
-        "interest_expense": _optional_decimal(parsed.get("interest_expense"), "interest_expense"),
+        "interest_expense": _optional_decimal(
+            parsed.get("interest_expense") or parsed.get("finance_cost"),
+            "interest_expense",
+        ),
         "npl_ratio": _optional_decimal(parsed.get("npl_ratio"), "npl_ratio"),
         "capital_adequacy_ratio": _optional_decimal(
             parsed.get("capital_adequacy_ratio"), "capital_adequacy_ratio"

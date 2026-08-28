@@ -186,6 +186,9 @@ Set DeepSeek config in `.env`:
 DEEPSEEK_API_KEY=your_key_here
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.6-luna
 NGXPULSE_API_KEY=your_key_here
 NGXPULSE_BASE_URL=https://www.ngxpulse.ng
 ```
