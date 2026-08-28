@@ -365,7 +365,7 @@ def test_gpt_report_draft_endpoint_creates_openai_draft(monkeypatch, session: Se
     draft = anyio.run(create_gpt_extraction_draft_from_report, report.id, session)
 
     assert draft.provider == "openai"
-    assert draft.model == "gpt-5.6-luna"
+    assert draft.model == "gpt-5.5"
     assert draft.uploaded_report_id == report.id
     assert draft.parsed_data["symbol"] == "SEPLAT"
     assert draft.parsed_data["profit_before_tax"] == 91600

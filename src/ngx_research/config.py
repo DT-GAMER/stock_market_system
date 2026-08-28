@@ -18,9 +18,11 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_model: str = "gpt-5.6-luna"
+    openai_model: str = "gpt-5.5"
     openai_reasoning_effort: str = "medium"
     openai_pdf_detail: str = "low"
+    openai_pdf_max_pages: int = 35
+    openai_pdf_selection_max_chars: int = 90000
     ngxpulse_api_key: str | None = None
     ngxpulse_base_url: str = "https://www.ngxpulse.ng"
     database_pool_size: int = 15

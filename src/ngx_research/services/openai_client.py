@@ -1,13 +1,40 @@
 import json
+import re
+import tempfile
 from pathlib import Path
 
 import httpx
+from pypdf import PdfReader, PdfWriter
 
 from ngx_research.config import settings
+from ngx_research.services.financial_section_extractor import (
+    ReportPage,
+    parse_report_pages,
+    select_financial_section,
+)
+from ngx_research.services.pdf_extractor import PdfExtractionError, extract_pdf_text
 
 
 class OpenAIExtractionError(RuntimeError):
     pass
+
+
+OPENAI_SUPPORTING_PATTERNS = (
+    re.compile(r"\bindependent auditor", re.IGNORECASE),
+    re.compile(r"\bkey audit matters?\b", re.IGNORECASE),
+    re.compile(r"\bqualified opinion\b", re.IGNORECASE),
+    re.compile(r"\bemphasis of matter\b", re.IGNORECASE),
+    re.compile(r"\bmaterial uncertainty\b", re.IGNORECASE),
+    re.compile(r"\bgoing concern\b", re.IGNORECASE),
+    re.compile(r"\bfive[- ]year\b", re.IGNORECASE),
+    re.compile(r"\bfinancial highlights?\b", re.IGNORECASE),
+    re.compile(r"\bdividends?\b", re.IGNORECASE),
+    re.compile(r"\brisk management\b", re.IGNORECASE),
+    re.compile(r"\bprincipal risks?\b", re.IGNORECASE),
+    re.compile(r"\bcorporate governance\b", re.IGNORECASE),
+    re.compile(r"\bsegment information\b", re.IGNORECASE),
+    re.compile(r"\bmanagement discussion\b", re.IGNORECASE),
+)
 
 
 async def extract_financial_statement_from_pdf(
@@ -25,20 +52,110 @@ async def extract_financial_statement_from_pdf(
     if file_path.suffix.lower() != ".pdf":
         raise OpenAIExtractionError("uploaded report is not a PDF")
 
+    upload_path, cleanup_upload_path, selected_pages = _prepare_pdf_for_openai(file_path)
     async with httpx.AsyncClient(timeout=180) as client:
-        file_id = await _upload_file(client, file_path, filename)
+        file_id = await _upload_file(client, upload_path, filename)
         try:
             raw_content = await _extract_with_responses_api(
                 client=client,
                 file_id=file_id,
-                filename=filename,
                 company_symbol=company_symbol,
                 company_name=company_name,
+                selected_pages=selected_pages,
             )
         finally:
             await _delete_file(client, file_id)
+            if cleanup_upload_path:
+                upload_path.unlink(missing_ok=True)
 
     return raw_content, _parse_json_content(raw_content)
+
+
+def _prepare_pdf_for_openai(file_path: Path) -> tuple[Path, bool, list[int]]:
+    reader = PdfReader(str(file_path))
+    page_count = len(reader.pages)
+    max_pages = max(1, settings.openai_pdf_max_pages)
+    if page_count <= max_pages:
+        return file_path, False, list(range(1, page_count + 1))
+
+    selected_numbers = _select_openai_pdf_pages(file_path, page_count, max_pages)
+    if not selected_numbers:
+        selected_numbers = list(range(max(1, page_count - max_pages + 1), page_count + 1))
+
+    slim_path = _write_selected_pdf(reader, selected_numbers)
+    return slim_path, True, selected_numbers
+
+
+def _select_openai_pdf_pages(file_path: Path, page_count: int, max_pages: int) -> list[int]:
+    try:
+        report_text, _, _ = extract_pdf_text(str(file_path))
+    except PdfExtractionError:
+        return []
+
+    pages = parse_report_pages(report_text)
+    if not pages:
+        return []
+
+    selected_text, _ = select_financial_section(
+        report_text,
+        max_chars=settings.openai_pdf_selection_max_chars,
+    )
+    core_numbers = [page.number for page in parse_report_pages(selected_text)]
+    extra_pages = sorted(
+        (
+            (page, _openai_supporting_page_score(page))
+            for page in pages
+            if page.number not in set(core_numbers)
+        ),
+        key=lambda item: (item[1], -item[0].number),
+        reverse=True,
+    )
+    selected = _ordered_unique(core_numbers)
+    for page, score in extra_pages:
+        if len(selected) >= max_pages:
+            break
+        if score <= 0:
+            continue
+        selected.append(page.number)
+
+    if len(selected) > max_pages:
+        selected_pages = [page for page in pages if page.number in set(selected)]
+        ranked = sorted(
+            selected_pages,
+            key=lambda page: (_openai_supporting_page_score(page), -page.number),
+            reverse=True,
+        )[:max_pages]
+        selected = [page.number for page in ranked]
+
+    return sorted(number for number in _ordered_unique(selected) if 1 <= number <= page_count)
+
+
+def _openai_supporting_page_score(page: ReportPage) -> int:
+    score = 0
+    score += 5 * sum(1 for pattern in OPENAI_SUPPORTING_PATTERNS if pattern.search(page.text))
+    score += min(8, len(re.findall(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+\.\d+\b", page.text)) // 8)
+    return score
+
+
+def _ordered_unique(numbers: list[int]) -> list[int]:
+    seen: set[int] = set()
+    unique: list[int] = []
+    for number in numbers:
+        if number in seen:
+            continue
+        seen.add(number)
+        unique.append(number)
+    return unique
+
+
+def _write_selected_pdf(reader: PdfReader, selected_numbers: list[int]) -> Path:
+    writer = PdfWriter()
+    for number in selected_numbers:
+        writer.add_page(reader.pages[number - 1])
+
+    with tempfile.NamedTemporaryFile(prefix="equitykobo-openai-", suffix=".pdf", delete=False) as file:
+        writer.write(file)
+        return Path(file.name)
 
 
 async def _upload_file(client: httpx.AsyncClient, file_path: Path, filename: str) -> str:
@@ -61,9 +178,9 @@ async def _upload_file(client: httpx.AsyncClient, file_path: Path, filename: str
 async def _extract_with_responses_api(
     client: httpx.AsyncClient,
     file_id: str,
-    filename: str,
     company_symbol: str | None,
     company_name: str | None,
+    selected_pages: list[int] | None = None,
 ) -> str:
     response = await client.post(
         f"{settings.openai_base_url.rstrip('/')}/responses",
@@ -83,6 +200,10 @@ async def _extract_with_responses_api(
                             "text": _financial_pdf_extraction_prompt(company_symbol, company_name),
                         },
                         {
+                            "type": "input_text",
+                            "text": _selected_pages_note(selected_pages),
+                        },
+                        {
                             "type": "input_file",
                             "file_id": file_id,
                             "detail": settings.openai_pdf_detail,
@@ -95,6 +216,15 @@ async def _extract_with_responses_api(
     if response.status_code >= 400:
         raise OpenAIExtractionError(f"OpenAI extraction failed: {response.status_code} {response.text}")
     return _response_output_text(response.json())
+
+
+def _selected_pages_note(selected_pages: list[int] | None) -> str:
+    if not selected_pages:
+        return "The attached PDF may be the full report."
+    return (
+        "The attached PDF may contain only selected pages from the original annual report. "
+        "Original page numbers included: " + ", ".join(str(number) for number in selected_pages)
+    )
 
 
 async def _delete_file(client: httpx.AsyncClient, file_id: str) -> None:
