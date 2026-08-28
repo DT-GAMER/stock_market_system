@@ -12,6 +12,10 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
       NGXPULSE_API_KEY: ${NGXPULSE_API_KEY:?NGXPULSE_API_KEY is required}
       NGXPULSE_BASE_URL: ${NGXPULSE_BASE_URL:-https://www.ngxpulse.ng}
       AUTOMATION_ENABLED: "false"
@@ -43,6 +47,10 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
       NGXPULSE_API_KEY: ${NGXPULSE_API_KEY:?NGXPULSE_API_KEY is required}
       NGXPULSE_BASE_URL: ${NGXPULSE_BASE_URL:-https://www.ngxpulse.ng}
       AUTOMATION_ENABLED: "false"
